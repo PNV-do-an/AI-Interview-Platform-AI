@@ -4,7 +4,8 @@
 aiohttp bèn gửi `text/plain; charset=utf-8`, và MediaMTX trả về 400 "invalid Content-Type"
 (đã đo 31/10 bằng whip_probe). WHIP yêu cầu `application/sdp`. Ngoài header, patch thêm
 kiểm tra HTTP status: trước đó lỗi đẩy stream bị ẩn và biểu hiện thành treo ở
-setRemoteDescription.
+setRemoteDescription. Patch thứ hai ép ưu tiên H264 cho track video của handle_rtcpush: MediaMTX
+không đưa VP8 vào HLS nên nếu để VP8 thì luồng avatar chỉ có tiếng, không có hình.
 """
 from __future__ import annotations
 
@@ -32,19 +33,49 @@ NEW = '''        async with aiohttp.ClientSession() as session:
                 answer_sdp = await response.text()
 '''
 
+# Đường /offer ép ưu tiên H264 (rtc_manager._create_pc_and_answer), còn handle_rtcpush thì không,
+# nên aiortc chào VP8 trước. MediaMTX chỉ mux H264 sang HLS, VP8 bị "skipping track" -> mất hình.
+ANCHOR = """        pc.addTrack(player.audio)
+        pc.addTrack(player.video)
+
+        await pc.setLocalDescription(await pc.createOffer())
+"""
+
+H264 = '''        pc.addTrack(player.audio)
+        pc.addTrack(player.video)
+
+        # PATCH-LOCAL (HLS chỉ nhận H264): ưu tiên H264 như _create_pc_and_answer, VP8 giữ làm dự phòng.
+        caps = RTCRtpSender.getCapabilities("video")
+        prefs = list(filter(lambda x: x.name == "H264", caps.codecs))
+        prefs += list(filter(lambda x: x.name == "VP8", caps.codecs))
+        prefs += list(filter(lambda x: x.name == "rtx", caps.codecs))
+        pc.getTransceivers()[1].setCodecPreferences(prefs)
+
+        await pc.setLocalDescription(await pc.createOffer())
+'''
+
 
 def main() -> int:
     with open(TARGET, encoding="utf-8") as f:
         src = f.read()
     block = src.split("async def handle_rtcpush", 1)[-1].split("async def shutdown", 1)[0]
-    if "application/sdp" in block:
-        print("[patch] rtc_manager.py đã có Content-Type: application/sdp — bỏ qua")
+    applied = []
+    if "application/sdp" not in block:
+        if OLD not in block:
+            sys.exit(f"Không thấy khối rtcpush gốc trong {TARGET} — vendor đã đổi, sửa tay.")
+        src = src.replace(OLD, NEW, 1)
+        applied.append("Content-Type: application/sdp")
+    if "setCodecPreferences" not in block:
+        if ANCHOR not in block:
+            sys.exit(f"Không thấy chỗ chèn ưu tiên codec trong {TARGET} — vendor đã đổi, sửa tay.")
+        src = src.replace(ANCHOR, H264, 1)
+        applied.append("uu tien codec H264")
+    if not applied:
+        print("[patch] rtc_manager.py đã vá xong (Content-Type + H264) — bỏ qua")
         return 0
-    if OLD not in block:
-        sys.exit(f"Không thấy khối rtcpush gốc trong {TARGET} — vendor đã đổi, sửa tay.")
     with open(TARGET, "w", encoding="utf-8") as f:
-        f.write(src.replace(OLD, NEW, 1))
-    print(f"[patch] {TARGET}: WHIP push nay gui Content-Type: application/sdp")
+        f.write(src)
+    print("[patch] " + TARGET + ": " + ", ".join(applied))
     return 0
 
 
