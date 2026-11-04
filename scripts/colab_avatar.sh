@@ -57,6 +57,15 @@ tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
 
 nvidia-smi -L || { echo "Colab chưa bật GPU: Runtime → Change runtime type → T4" >&2; exit 1; }
 
+# Chạy lại cell trên cùng runtime thì tiến trình lần trước vẫn giữ 8010/8020/8888/8889 và MediaMTX,
+# AI service cũ sẽ trả lời bằng config/HLS URL cũ -> dẹp đúng bốn thứ script này sinh ra (theo cmdline).
+step "don lan chay truoc"
+pkill -x mediamtx 2>/dev/null || true
+pkill -f 'scripts/run_server.py' 2>/dev/null || true
+pkill -f 'run_ai_server.py' 2>/dev/null || true
+pkill -f 'cloudflared tunnel' 2>/dev/null || true
+sleep 3
+
 # vendored/ không vào git (.gitignore loại) nên không có nguồn LiveTalking trong bản clone.
 # Kéo thẳng từ upstream, pin đúng commit đã kiểm chứng trên máy local.
 step "0/8 LiveTalking nguon (lipku/LiveTalking)"
