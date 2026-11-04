@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Model weights and runtime data — downloaded by scripts/bootstrap_weights.sh
+*.pth
+*.onnx
+models/
+data/
+downloads/
+*.mp4
+!assets/*.mp4
+
+vendored/
