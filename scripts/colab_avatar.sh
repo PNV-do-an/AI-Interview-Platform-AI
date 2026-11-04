@@ -170,9 +170,17 @@ wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 180 "luồng ava
 curl -fsS -m 5 "http://127.0.0.1:$PORT_LT/api/admin/sessions" | head -c 200; echo
 
 step "7/8 cloudflared: tunnel HTTPS cho HLS"
-[ -x /usr/local/bin/cloudflared ] || wget -q -O /usr/local/bin/cloudflared \
-  https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+if [ ! -x /usr/local/bin/cloudflared ]; then
+  # wget -q im lang hon wget that: mot cu tai ken (Colab van thuong bi nganh toc khi di GitHub)
+  # se khien script dung o day ma khong in ra dong retry nao cua tunnel() -> khong phan biet duoc
+  # "tai cham" va "tunnel treo". Bu no in tien do va tu ket lieu neu 30s khong tien.
+  wget --show-progress --progress=dot:mega --timeout=30 --tries=4 -O /usr/local/bin/cloudflared \
+    https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+    || { echo "khong tai duoc cloudflared ve /usr/local/bin/cloudflared" >&2; exit 1; }
+fi
 chmod +x /usr/local/bin/cloudflared
+# File tai do/ken ma con +x thi "cloudflared tunnel" chet im trong log cua tunnel; --version loc ra ngay.
+/usr/local/bin/cloudflared --version
 HLS_URL="$(tunnel "$PORT_MTX_HLS" "$LOG_DIR/cf-hls.log")"
 echo "HLS public: $HLS_URL"
 
