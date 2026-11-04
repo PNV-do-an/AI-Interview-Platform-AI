@@ -28,6 +28,17 @@ mkdir -p "$LOG_DIR"
 
 step() { printf '\n=== %s ===\n' "$*"; }
 
+# daemon <log> <cwd> <lenh...>
+# Cell Colab ket thuc thi tan sat doan tien trinh cua shell no, nen "nohup ... &" thoi la khong
+# du: dich vu chet ngay sau do, duong tunnel tra Cloudflare 1033. setsid dua no sang session
+# khac; </dev/null + redirect thu cong 3 fd cua cell de cell khong bi giu trang thai Executing.
+daemon() {
+  local log="$1" dir="$2"; shift 2
+  local launcher=(nohup)
+  command -v setsid >/dev/null 2>&1 && launcher=(setsid)
+  ( cd "$dir" && "${launcher[@]}" "$@" </dev/null >"$log" 2>&1 & )
+}
+
 wait_http() { # wait_http <url> <giây-chờ> <mô-tả>
   local url="$1" limit="$2" what="$3" i
   # -L là bắt buộc: MediaMTX trả 302 set-cookie trước khi playlist thật, nên không theo
@@ -46,7 +57,7 @@ public_url_of() { # public_url_of <log> -> in ra URL trycloudflare đầu tiên
 
 tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
   local port="$1" log="$2" limit="${3:-60}" url="" i
-  (nohup cloudflared tunnel --url "http://127.0.0.1:$port" --no-autoupdate > "$log" 2>&1 &)
+  daemon "$log" / cloudflared tunnel --url "http://127.0.0.1:$port" --no-autoupdate
   for i in $(seq 1 "$limit"); do
     url="$(public_url_of "$log")"
     [ -n "$url" ] && { echo "$url"; return 0; }
@@ -60,6 +71,8 @@ nvidia-smi -L || { echo "Colab chưa bật GPU: Runtime → Change runtime type 
 # Chạy lại cell trên cùng runtime thì tiến trình lần trước vẫn giữ 8010/8020/8888/8889 và MediaMTX,
 # AI service cũ sẽ trả lời bằng config/HLS URL cũ -> dẹp đúng bốn thứ script này sinh ra (theo cmdline).
 step "don lan chay truoc"
+# tunnel chet ngay sau cell neu launcher la nohup -> dong nay cho biet Colab co setsid khong.
+echo "launcher tien trinh nen: $(command -v setsid || echo 'nohup (khong co setsid)')"
 pkill -x mediamtx 2>/dev/null || true
 pkill -f 'scripts/run_server.py' 2>/dev/null || true
 pkill -f 'run_ai_server.py' 2>/dev/null || true
@@ -132,15 +145,15 @@ paths:
   "$HLS_PATH":
     source: publisher
 YML
-(cd /content/mediamtx && nohup ./mediamtx > "$LOG_DIR/mediamtx.out" 2>&1 &)
+daemon "$LOG_DIR/mediamtx.out" /content/mediamtx ./mediamtx
 
 step "6/8 LiveTalking rtcpush (push vào 127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip)"
-(cd "$AI_ROOT" && nohup python scripts/run_server.py \
+daemon "$LOG_DIR/livetalking.log" "$AI_ROOT" python scripts/run_server.py \
   --config "$AI_ROOT/config/livetalking.yaml" \
   --model "$MODEL" --avatar_id "$AVATAR_ID" \
   --transport rtcpush --max_session 1 \
   --push_url "http://127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip" \
-  --listenport "$PORT_LT" > "$LOG_DIR/livetalking.log" 2>&1 &)
+  --listenport "$PORT_LT"
 # rtcpush tự mở session "0" ngay lúc khởi động và push liên tục; HLS chỉ có stream khi cú push đó thành công.
 wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 180 "luồng avatar ($HLS_PATH)"
 curl -fsS -m 5 "http://127.0.0.1:$PORT_LT/api/admin/sessions" | head -c 200; echo
@@ -153,12 +166,12 @@ HLS_URL="$(tunnel "$PORT_MTX_HLS" "$LOG_DIR/cf-hls.log")"
 echo "HLS public: $HLS_URL"
 
 step "8/8 AI service (FastAPI $PORT_AI)"
-( cd "$AI_ROOT" && env \
+daemon "$LOG_DIR/ai.log" "$AI_ROOT" env \
     AI_AVATAR_SERVER="http://127.0.0.1:$PORT_LT" \
     AI_AVATAR_ID="$AVATAR_ID" \
     AI_MEDIA_URL="$HLS_URL/$HLS_PATH/index.m3u8" \
     AI_ALLOWED_ORIGIN="$FE_ORIGIN" \
-    nohup python run_ai_server.py > "$LOG_DIR/ai.log" 2>&1 & )
+    python run_ai_server.py
 wait_http "http://127.0.0.1:$PORT_AI/health" 60 "AI service"
 curl -fsS -m 5 http://127.0.0.1:$PORT_AI/health; echo
 AI_URL="$(tunnel "$PORT_AI" "$LOG_DIR/cf-ai.log")"
