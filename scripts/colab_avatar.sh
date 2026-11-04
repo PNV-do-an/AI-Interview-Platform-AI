@@ -104,6 +104,7 @@ if [ ! -x /content/mediamtx/mediamtx ]; then
   wget -q -O /content/mtx.tgz "https://github.com/bluenviron/mediamtx/releases/download/v${VER}/mediamtx_v${VER}_linux_amd64.tar.gz"
   mkdir -p /content/mediamtx && tar -xzf /content/mtx.tgz -C /content/mediamtx
 fi
+# Mặc định 2s cắt phiên WHIP trước khi wav2lip ra được khung hình đầu, và LiveTalking không push lại.
 cat > /content/mediamtx/mediamtx.yml <<YML
 logLevel: info
 api: yes
@@ -117,6 +118,7 @@ webrtc: yes
 webrtcAddress: 127.0.0.1:$PORT_MTX_WHIP
 webrtcLocalUDPAddress: 0.0.0.0:8189
 webrtcAllowOrigin: '*'
+webrtcTrackGatherTimeout: 30s
 paths:
   "$HLS_PATH":
     source: publisher
