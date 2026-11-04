@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  ai-service:
+    build: .
+    ports:
+      - "8020:8020"
+    environment:
+      - AI_AVATAR_SERVER=http://livetalking:8010
+      - AI_AVATAR_ID=vn_interviewer_v1
+      - AI_STT_MODEL=small
+      - AI_STT_DEVICE=cpu
+      - AI_STT_COMPUTE=int8
+      - AI_MAX_TURNS=40
+      - AI_RUBRIC_VERSION=2026-10-v1
+      # Origin của trình duyệt ứng viên; AI service chỉ mở CORS cho giá trị này
+      - AI_ALLOWED_ORIGIN=${AI_ALLOWED_ORIGIN:-http://localhost:3000}
+    volumes:
+      - ./data:/app/data
+      - ./assets:/app/assets
+      - ./vendored/LiveTalking/models:/app/vendored/LiveTalking/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  livetalking:
+    image: doubiiu/livetalking:v1
+    ports:
+      - "8010:8010"
+      # WebRTC cần cả UDP cho kênh media; host sau NAT không mở được thì phải đi đường
+      # HLS (scripts/colab_avatar.sh) và đặt AI_MEDIA_URL cho ai-service.
+      - "8010:8010/udp"
+    volumes:
+      - ./assets:/app/data/avatars
+      - ./config:/app/config
+      - ./vendored/LiveTalking/models:/app/models/wav2lip
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

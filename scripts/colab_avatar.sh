@@ -106,7 +106,6 @@ if [ ! -x /content/mediamtx/mediamtx ]; then
 fi
 cat > /content/mediamtx/mediamtx.yml <<YML
 logLevel: info
-logDestination: $LOG_DIR/mediamtx.log
 api: yes
 apiAddress: 127.0.0.1:9997
 rtmp: yes
@@ -161,6 +160,6 @@ $AI_URL
 Luồng avatar HLS (AI service tự báo qua /health, không cần cấu hình FE):
 $AI_URL -> mediaUrl = $HLS_URL/$HLS_PATH/index.m3u8
 
-Log: $LOG_DIR/{livetalking,ai,mediamtx,cf-ai,cf-hls}.log
+Log: $LOG_DIR/{livetalking,ai,cf-ai,cf-hls}.log, $LOG_DIR/mediamtx.out
 TXT
 echo; cat "$URLS_FILE"

@@ -41,30 +41,10 @@
 
 ### Quick Start
 
-#### Option A: Docker (Recommended)
+#### Option A: Colab free (0đ — đường staging đang dùng)
 
-```bash
-# Build image
-docker build -t hiremind-ai-service .
-
-# Run container
-docker run -d \
-  --name hiremind-ai \
-  --gpus all \
-  -p 8010:8010 \
-  -p 8020:8020 \
-  -e AI_AVATAR_SERVER=http://livetalking:8010 \
-  -e AI_ALLOWED_ORIGIN=* \
-  hiremind-ai-service
-
-# Wait 30 seconds for warmup
-# Test health check
-curl http://localhost:8020/health
-```
-
-#### Option B: Colab Free Tier (0đ, không Docker)
-
-Mở `colab-avatar-hls.ipynb` trên Colab T4 và chạy lần lượt 6 cell, hoặc tay:
+Mở `colab-avatar-hls.ipynb` trên Colab T4 và chạy lần lượt 4 cell code (2 cell markdown còn lại là
+hướng dẫn), hoặc tay:
 
 ```bash
 AI_ROOT=/content/ai FE_ORIGIN=https://aiinterview-vn.vercel.app bash scripts/colab_avatar.sh
@@ -80,13 +60,16 @@ browser, mà Colab/tunnel HTTP không chuyển được UDP — xem `docs/AVATAR
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AI_AVATAR_SERVER` | `http://livetalking:8010` | LiveTalking engine URL |
+| `AI_AVATAR_SERVER` | `http://127.0.0.1:8010` | LiveTalking engine URL (`http://livetalking:8010` khi chạy 2 container rời trong docker-compose) |
 | `AI_AVATAR_ID` | `vn_interviewer_v1` | Avatar pack id (build bằng `scripts/make_avatar.py`) |
 | `AI_MEDIA_URL` | *(rỗng)* | URL HLS public của avatar; có giá trị thì FE phát HLS, rỗng thì FE bắt tay WebRTC qua `/avatar/offer` |
-| `AI_ALLOWED_ORIGIN` | `*` | CORS allowed origin |
+| `AI_ALLOWED_ORIGIN` | `http://localhost:3000` | CORS allowed origin — đặt đúng origin staging |
 | `AI_STT_MODEL` | `small` | Whisper model: tiny/base/small |
+| `AI_STT_DEVICE` / `AI_STT_COMPUTE` | `cpu` / `int8` | STT chạy CPU vì LiveTalking giữ hết VRAM 4GB |
 | `AI_LLM_PROVIDER` | `template` | template/openai/vllm |
+| `AI_MAX_TURNS` | `40` | Trần lượt của một phiên (khớp BE spec 012) |
 | `AI_SESSION_TTL_MIN` | `180` | Session TTL in minutes |
+| `AI_HOST` / `AI_PORT` | `0.0.0.0` / `8020` | Nơi FastAPI lắng nghe |
 | `MAX_SESSION` | `5` | Max concurrent sessions |
 
 ### Config Files
@@ -364,10 +347,11 @@ Based on tests on Google Colab T4 GPU:
 
 ## 📚 Documentation
 
-- **[Spec 012 Avatar Interview API]**(../../specs/012-avatar-interview-api/spec.md) - Backend contract
-- **[P1 AI Service Results]**(../../docs/P1-ai-service.md) - Detailed performance metrics
-- **[Colab Deployment Guide]**(../../docs/colab-deployment-guide.md) - Step-by-step setup
-- **[Deployment Checklist]**(../../docs/DEPLOYMENT_CHECKLIST.md) - Verification steps
+- `docs/AVATAR-HLS-FREE.md` - vì sao Colab/tunnel bắt buộc đi HLS, các số đã đo 31/10
+- `DEPLOYMENT.md` - Colab (0đ) / GCP có IP public / Docker local
+- `VIDEO_CALL_SETUP.md` - nối phòng avatar vào staging, checklist từng bước, troubleshooting
+- `colab-avatar-hls.ipynb` - notebook dựng cả chuỗi trên một máy Colab
+- Spec 012 (hợp đồng BE giữ): https://github.com/PNV-do-an/AI-Interview-Platform-BE/blob/dev/specs/012-avatar-interview-api/spec.md
 
 ## 🛠️ Development
 
@@ -376,25 +360,29 @@ Based on tests on Google Colab T4 GPU:
 ```
 AI-Interview-Platform-AI/
 ├── app/
-│   ├── main.py           # FastAPI server
-│   ├── avatar.py         # LiveTalking client
-│   ├── sessions.py       # Session management
-│   ├── stt.py            # Speech-to-text
-│   ├── llm.py            # Question generator
-│   ├── audio.py          # Audio processing
-│   └── config.py         # Configuration
+│   ├── main.py           # FastAPI server (:8020) — biên HTTP của AI service
+│   ├── avatar.py         # Client LiveTalking (:8010)
+│   ├── sessions.py       # Store phiên + orchestrator hỏi/đáp
+│   ├── stt.py            # faster-whisper (CPU int8)
+│   ├── llm.py            # Sinh câu hỏi theo JD + chấm rubric
+│   ├── audio.py          # Giải mã audio frontend gửi lên
+│   └── config.py         # Toàn bộ cấu hình từ biến AI_*
 ├── scripts/
-│   ├── p1_ai_service_e2e.py  # End-to-end test
-│   ├── p1_stt_cost.py        # STT cost analysis
-│   ├── p1_tts_spread.py      # TTS latency test
-│   └── colab_keepalive.py    # Colab session ping
-├── vendored/
-│   └── LiveTalking/      # Avatar engine (external)
-├── config/
-│   └── livetalking.yaml  # LiveTalking config
-├── Dockerfile
+│   ├── colab_avatar.sh       # Bring-up cả chuỗi LiveTalking→MediaMTX→cloudflared trên Colab
+│   ├── patch_rtcpush_whip.py # Vá LiveTalking để MediaMTX nhận WHIP
+│   ├── run_server.py         # Khởi động LiveTalking theo config yaml
+│   ├── make_avatar.py        # Build avatar pack từ ảnh/mp4 nguồn trong assets/
+│   ├── p0_*.py / p1_*.py     # Đo lip-sync, STT, TTS, e2e
+│   └── colab_keepalive.py    # Giữ phiên Colab
+├── docs/AVATAR-HLS-FREE.md   # Vì sao bắt buộc HLS + các số đã đo
+├── colab-avatar-hls.ipynb    # Notebook dựng avatar cho staging (0đ)
+├── config/livetalking*.yaml  # Config engine avatar
+├── vendored/LiveTalking/     # Không vào git; clone lúc build/Chạy script
+├── Dockerfile + entrypoint.sh    # Một container chạy cả :8010 và :8020
+├── docker-compose.yml        # Ai-service + livetalking (GPU host có IP public)
+├── DEPLOYMENT.md / VIDEO_CALL_SETUP.md
 ├── requirements-ai.txt
-└── run_ai_server.py      # Launcher script
+└── run_ai_server.py          # Launcher FastAPI
 ```
 
 ### Running Locally
@@ -422,10 +410,10 @@ Internal use only. See parent repository for license details.
 
 ## 🆘 Support
 
-- **Documentation**: See `/docs/` folder
-- **Issues**: Check `/specs/012-avatar-interview-api/spec.md`
-- **Hardware Requirements**: See `hardware-gtx1650-4gb.md`
-- **Deployment Help**: See `DEPLOYMENT.md`
+- **Vì sao staging phải đi qua HLS (số đã đo)**: `docs/AVATAR-HLS-FREE.md`
+- **Deploy**: `DEPLOYMENT.md`, `VIDEO_CALL_SETUP.md`, `colab-avatar-hls.ipynb`
+- **Hợp đồng API / nghiệp vụ**: spec 012 nằm ở repo BE —
+  https://github.com/PNV-do-an/AI-Interview-Platform-BE/blob/dev/specs/012-avatar-interview-api/spec.md
 
 ---
 

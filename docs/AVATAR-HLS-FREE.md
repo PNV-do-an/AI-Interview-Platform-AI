@@ -56,7 +56,7 @@ vì `vendored/` không lên GitHub (`scripts/colab_avatar.sh` clone LiveTalking 
 ## 5. Chạy
 
 ```bash
-# Colab (T4): mở colab-avatar-hls.ipynb, chạy lần lượt 6 cell.
+# Colab (T4): mở colab-avatar-hls.ipynb, chạy lần lượt 4 cell code.
 # Hoặc tay:
 bash scripts/colab_avatar.sh
 ```
