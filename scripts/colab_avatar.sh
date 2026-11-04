@@ -52,7 +52,9 @@ wait_http() { # wait_http <url> <giây-chờ> <mô-tả>
 }
 
 public_url_of() { # public_url_of <log> -> in ra URL trycloudflare đầu tiên
-  grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$1" | head -1
+  # || true la bat buoc: grep tra 1 khi chua co URL, nen "set -eo pipefail" se giết script ngay
+  # vong lap dau tien cua tunnel() — chet im lang, khong in loi.
+  grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$1" 2>/dev/null | head -1 || true
 }
 
 # Mặc định cloudflared thử QUIC (UDP), và trên Colab nó có thể treo sau dòng "precheck complete"
