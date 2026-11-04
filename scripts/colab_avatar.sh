@@ -119,7 +119,6 @@ webrtcLocalUDPAddress: 0.0.0.0:8189
 webrtcAllowOrigin: '*'
 YML
 (cd /content/mediamtx && nohup ./mediamtx > "$LOG_DIR/mediamtx.out" 2>&1 &)
-wait_http "http://127.0.0.1:$PORT_MTX_HLS/" 30 "MediaMTX"
 
 step "6/8 LiveTalking rtcpush (push vào 127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip)"
 (cd "$AI_ROOT" && nohup python scripts/run_server.py \
