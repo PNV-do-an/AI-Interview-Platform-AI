@@ -15,6 +15,9 @@ class Settings:
     # LiveTalking (repo vendored) — avatar + WebRTC
     avatar_server: str
     avatar_id: str
+    # URL HLS công khai của stream avatar — để FE phát bằng HTTPS khi host không có IP public
+    # (Colab/chỉ có tunnel HTTP), rỗng nghĩa là FE phải nối WebRTC qua /avatar/offer.
+    media_url: str
     # STT
     stt_model: str
     stt_device: str
@@ -38,6 +41,7 @@ class Settings:
         return Settings(
             avatar_server=_env("AI_AVATAR_SERVER", "http://127.0.0.1:8010"),
             avatar_id=_env("AI_AVATAR_ID", "vn_interviewer_v1"),
+            media_url=_env("AI_MEDIA_URL"),
             # small + int8 trên CPU: đo 26/10 hết 4.5..5.0s cho câu 6.0s khi máy không chạy
             # avatar; GPU đang bị LiveTalking giữ 3716/4096 MiB nên STT không còn chỗ.
             stt_model=_env("AI_STT_MODEL", "small"),

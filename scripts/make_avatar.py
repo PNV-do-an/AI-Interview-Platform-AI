@@ -45,14 +45,18 @@ def warn_gpu_busy():
 
 
 def image_to_video(src, out, seconds, fps, still):
+    # Ảnh nguồn hay lệch tỷ lệ với khung 3:4 — increase+crop để không kéo giãn mặt.
+    fit = (f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
+           if still else
+           f"scale={2*W}:{2*H}:force_original_aspect_ratio=increase,crop={2*W}:{2*H}")
     if still:
-        vf = f"scale={W}:{H}"
+        vf = fit
     else:
-        vf = (
-            f"scale={2*W}:{2*H},"
-            "zoompan=z='1.03+0.012*sin(on/55*PI)':"
-            "x='iw/2-(iw/zoom/2)+10*sin(on/41*PI)':"
-            "y='ih/2-(ih/zoom/2)+7*sin(on/31*PI)+3*cos(on/67*PI)':"
+        # Drift chậm 17–30s một vòng, biên độ <=3px: đủ để khung hình "thở", không lắc.
+        vf = fit + (
+            ",zoompan=z='1.02+0.004*sin(on/375*PI)':"
+            "x='iw/2-(iw/zoom/2)+3*sin(on/250*PI)':"
+            "y='ih/2-(ih/zoom/2)+2*sin(on/325*PI)+1*cos(on/433*PI)':"
             f"d=1:s={W}x{H}:fps={fps}"
         )
     subprocess.run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",

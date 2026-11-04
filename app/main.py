@@ -105,6 +105,7 @@ def create_app(settings: Settings) -> FastAPI:
         except AvatarError:
             sessions = -1  # avatar không với tới được — FE phải biết trước khi mở phiên
         return {"status": "ok", "avatarServer": settings.avatar_server, "avatarId": settings.avatar_id,
+                "mediaUrl": settings.media_url,
                 "avatarSessions": sessions, "sttModel": settings.stt_model,
                 "llmProvider": "openai" if settings.llm_ready() else "template",
                 "openSessions": store.count(), "maxTurns": settings.max_turns,

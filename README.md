@@ -62,9 +62,17 @@ docker run -d \
 curl http://localhost:8020/health
 ```
 
-#### Option B: Colab Free Tier
+#### Option B: Colab Free Tier (0đ, không Docker)
 
-See [Colab Deployment Guide](../docs/colab-deployment-guide.md) for complete instructions.
+Mở `colab-avatar-hls.ipynb` trên Colab T4 và chạy lần lượt 6 cell, hoặc tay:
+
+```bash
+AI_ROOT=/content/ai FE_ORIGIN=https://aiinterview-vn.vercel.app bash scripts/colab_avatar.sh
+```
+
+Script dựng chuỗi `LiveTalking (rtcpush) → MediaMTX (HLS) → cloudflared → AI service → cloudflared`
+và in hai URL public. Lý do bắt buộc đi qua HLS: WebRTC thuần cần UDP thẳng từ máy chủ tới trình
+browser, mà Colab/tunnel HTTP không chuyển được UDP — xem `docs/AVATAR-HLS-FREE.md`.
 
 ## 🔧 Configuration
 
@@ -73,6 +81,8 @@ See [Colab Deployment Guide](../docs/colab-deployment-guide.md) for complete ins
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AI_AVATAR_SERVER` | `http://livetalking:8010` | LiveTalking engine URL |
+| `AI_AVATAR_ID` | `vn_interviewer_v1` | Avatar pack id (build bằng `scripts/make_avatar.py`) |
+| `AI_MEDIA_URL` | *(rỗng)* | URL HLS public của avatar; có giá trị thì FE phát HLS, rỗng thì FE bắt tay WebRTC qua `/avatar/offer` |
 | `AI_ALLOWED_ORIGIN` | `*` | CORS allowed origin |
 | `AI_STT_MODEL` | `small` | Whisper model: tiny/base/small |
 | `AI_LLM_PROVIDER` | `template` | template/openai/vllm |
@@ -81,8 +91,9 @@ See [Colab Deployment Guide](../docs/colab-deployment-guide.md) for complete ins
 
 ### Config Files
 
-- `config/livetalking.yaml` - LiveTalking engine settings
-- `.env.example` - Environment variables template
+- `config/livetalking.yaml` - LiveTalking engine settings (rtcpush/HLS)
+- `config/livetalking_static.yaml` - LiveTalking engine settings (static mp4)
+- `docs/AVATAR-HLS-FREE.md` - Lý do + các số đã đo của đường HLS trên Colab
 
 ## 📋 API Endpoints
 
@@ -90,7 +101,10 @@ See [Colab Deployment Guide](../docs/colab-deployment-guide.md) for complete ins
 
 ```http
 GET /health
-Returns: STT model info, max turns, active sessions
+Returns: {status, avatarServer, avatarId, mediaUrl, avatarSessions, sttModel, llmProvider,
+          openSessions, maxTurns, rubricVersion}
+`mediaUrl` rỗng = host chỉ nói được WebRTC; có giá trị = FE phát HLS, không cần bắt tay /offer.
+`avatarSessions: -1` = AI service sống nhưng không với tới LiveTalking.
 ```
 
 ### Avatar WebRTC
