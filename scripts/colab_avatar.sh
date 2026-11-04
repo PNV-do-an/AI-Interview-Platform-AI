@@ -117,6 +117,9 @@ webrtc: yes
 webrtcAddress: 127.0.0.1:$PORT_MTX_WHIP
 webrtcLocalUDPAddress: 0.0.0.0:8189
 webrtcAllowOrigin: '*'
+paths:
+  "$HLS_PATH":
+    source: publisher
 YML
 (cd /content/mediamtx && nohup ./mediamtx > "$LOG_DIR/mediamtx.out" 2>&1 &)
 
