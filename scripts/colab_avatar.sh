@@ -55,15 +55,24 @@ public_url_of() { # public_url_of <log> -> in ra URL trycloudflare đầu tiên
   grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$1" | head -1
 }
 
+# Mặc định cloudflared thử QUIC (UDP), và trên Colab nó có thể treo sau dòng "precheck complete"
+# mà không bao giờ in URL. --protocol http2 ép nó dùng TCP 443, đường mà chính precheck báo
+# "HTTP/2 connection successful". Vẫn cần retry vì quick tunnel đôi khi lỗi im lặng.
 tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
-  local port="$1" log="$2" limit="${3:-60}" url="" i
-  daemon "$log" / cloudflared tunnel --url "http://127.0.0.1:$port" --no-autoupdate
-  for i in $(seq 1 "$limit"); do
-    url="$(public_url_of "$log")"
-    [ -n "$url" ] && { echo "$url"; return 0; }
-    sleep 1
+  local port="$1" log="$2" limit="${3:-60}" url="" attempt i
+  for attempt in 1 2 3; do
+    daemon "$log" / cloudflared tunnel --url "http://127.0.0.1:$port" \
+      --no-autoupdate --protocol http2
+    for i in $(seq 1 "$limit"); do
+      url="$(public_url_of "$log")"
+      [ -n "$url" ] && { echo "$url"; return 0; }
+      sleep 1
+    done
+    echo "cloudflared không in URL sau ${limit}s (lần thử $attempt/3, xem $log)" >&2
+    pkill -f "cloudflared tunnel --url http://127.0.0.1:$port" 2>/dev/null || true
+    sleep 5
   done
-  echo "cloudflared không in URL trong $limit+s (xem $log)" >&2; return 1
+  echo "không mở được tunnel cho cổng $port sau 3 lần (xem $log)" >&2; return 1
 }
 
 nvidia-smi -L || { echo "Colab chưa bật GPU: Runtime → Change runtime type → T4" >&2; exit 1; }
