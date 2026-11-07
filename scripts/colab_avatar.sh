@@ -191,6 +191,7 @@ hlsAllowOrigin: '*'
 webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigin: '*'
+webrtcAdditionalHosts: [127.0.0.1]
 
 rtsp: no
 rtmp: no
