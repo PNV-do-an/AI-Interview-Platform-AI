@@ -175,6 +175,10 @@ paths:
     source: publisher
 YML
 
+echo "=== Mediamtx Config ===" >&2
+cat "$MTX_CFG" >&2
+echo "========================" >&2
+
 # Kiểm tra binary tồn tại & chạy được
 if [ ! -x "$MTX_BIN" ]; then
   echo "FATAL: không tìm thấy mediamtx binary tại $MTX_BIN" >&2
