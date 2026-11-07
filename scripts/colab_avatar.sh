@@ -214,6 +214,19 @@ fi
 echo "MediaMTX OK, log = $MTX_LOG"
 
 step "6/8 LiveTalking rtcpush (push vào 127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip)"
+
+# Test WHIP OPTIONS before starting LiveTalking
+echo "Testing WHIP endpoint..." >&2
+WHIP_URL="http://127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip"
+OPTIONS_RESULT=$(curl -sS -o /dev/null -w '%{http_code}' -X OPTIONS "$WHIP_URL" 2>/dev/null || echo "FAIL")
+echo "WHIP OPTIONS $HLS_PATH -> $OPTIONS_RESULT" >&2
+
+# Nếu trả 404 hoặc 400, thử check log xem path có được đăng ký không
+if [ "$OPTIONS_RESULT" = "404" ] || [ "$OPTIONS_RESULT" = "400" ]; then
+  echo "WARN: WHIP path chưa được chấp nhận. Kiểm tra log:" >&2
+  tail -n 30 "$MTX_LOG" >&2 || true
+fi
+
 daemon "$LOG_DIR/livetalking.log" "$AI_ROOT" python scripts/run_server.py \
   --config "$AI_ROOT/config/livetalking.yaml" \
   --model "$MODEL" --avatar_id "$AVATAR_ID" \
