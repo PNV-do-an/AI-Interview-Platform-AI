@@ -52,23 +52,25 @@ wait_http() { # wait_http <url> <giây-chờ> <mô-tả>
 }
 
 public_url_of() { # public_url_of <log> -> in ra URL trycloudflare đầu tiên
+  # Strip ANSI codes trước khi grep (Colab log co chep them).
   # || true la bat buoc: grep tra 1 khi chua co URL, nen "set -eo pipefail" se giết script ngay
   # vong lap dau tien cua tunnel() — chet im lang, khong in loi.
-  grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$1" 2>/dev/null | head -1 || true
+  sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$1" 2>/dev/null | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 || true
 }
 
 # Mặc định cloudflared thử QUIC (UDP), và trên Colab nó có thể treo sau dòng "precheck complete"
 # mà không bao giờ in URL. --protocol http2 ép nó dùng TCP 443, đường mà chính precheck báo
 # "HTTP/2 connection successful". Vẫn cần retry vì quick tunnel đôi khi lỗi im lặng.
 tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
-  local port="$1" log="$2" limit="${3:-60}" url="" attempt i
+  local port="$1" log="$2" limit="${3:-90}" url="" attempt i
   for attempt in 1 2 3; do
+    echo "[attempt $attempt] Starting cloudflared on port $port..." >&2
     daemon "$log" / cloudflared tunnel --url "http://127.0.0.1:$port" \
       --no-autoupdate --protocol http2
     for i in $(seq 1 "$limit"); do
       url="$(public_url_of "$log")"
       [ -n "$url" ] && { echo "$url"; return 0; }
-      sleep 1
+      sleep 2
     done
     echo "cloudflared không in URL sau ${limit}s (lần thử $attempt/3, xem $log)" >&2
     pkill -f "cloudflared tunnel --url http://127.0.0.1:$port" 2>/dev/null || true
