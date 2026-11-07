@@ -138,36 +138,76 @@ else
   ( cd "$AI_ROOT" && python scripts/make_avatar.py --src assets/vn_interviewer_src.png --id "$AVATAR_ID" )
 fi
 
-step "5/8 MediaMTX (WHIP ingest $PORT_MTX_WHIP, HLS out $PORT_MTX_HLS)"
-if [ ! -x /content/mediamtx/mediamtx ]; then
+# --- 5/8 MediaMTX (WHIP ingest $PORT_MTX_WHIP, HLS out $PORT_MTX_HLS) ---
+echo "=== 5/8 MediaMTX (WHIP ingest $PORT_MTX_WHIP, HLS out $PORT_MTX_HLS) ==="
+
+MTX_BIN="$AI_ROOT/mediamtx/mediamtx"
+MTX_CFG="$AI_ROOT/mediamtx/mediamtx.yml"
+MTX_LOG="$LOG_DIR/mediamtx.log"
+
+# Download mediamtx if not exists
+if [ ! -x "$MTX_BIN" ]; then
   VER="$(curl -fsS https://api.github.com/repos/bluenviron/mediamtx/releases/latest |
         grep -oP '"tag_name":\s*"v\K[0-9.]+')"
   wget -q -O /content/mtx.tgz "https://github.com/bluenviron/mediamtx/releases/download/v${VER}/mediamtx_v${VER}_linux_amd64.tar.gz"
-  mkdir -p /content/mediamtx && tar -xzf /content/mtx.tgz -C /content/mediamtx
+  mkdir -p "$AI_ROOT/mediamtx" && tar -xzf /content/mtx.tgz -C "$AI_ROOT/mediamtx"
 fi
-# Mặc định 2s cắt phiên WHIP trước khi wav2lip ra được khung hình đầu, và LiveTalking không push lại.
-cat > /content/mediamtx/mediamtx.yml <<YML
+
+# Build minimal config chuẩn (port dùng : thay vì 127.0.0.1: để bind đúng interface Colab)
+cat > "$MTX_CFG" <<YML
 logLevel: info
-api: yes
-apiAddress: 127.0.0.1:9997
-rtmp: yes
-rtmpAddress: 127.0.0.1:1935
+logDestinations: [stdout]
+
 hls: yes
-hlsAddress: 127.0.0.1:$PORT_MTX_HLS
+hlsAddress: :8888
 hlsAllowOrigin: '*'
+
 webrtc: yes
-webrtcAddress: 127.0.0.1:$PORT_MTX_WHIP
-webrtcLocalUDPAddress: 0.0.0.0:8189
+webrtcAddress: :8889
 webrtcAllowOrigin: '*'
-webrtcTrackGatherTimeout: 30s
+
+rtsp: no
+rtmp: no
+srt: no
+
 paths:
-  default:
+  all_others:
     source: publisher
-    # Tự động nhận bất kỳ path nào (avoid 404 nếu path chưa được định nghĩa)
-    runOnInit:
-      - command: ["echo", "WHIP ingest enabled for any path"]
 YML
-daemon "$LOG_DIR/mediamtx.out" /content/mediamtx ./mediamtx
+
+# Kiểm tra binary tồn tại & chạy được
+if [ ! -x "$MTX_BIN" ]; then
+  echo "FATAL: không tìm thấy mediamtx binary tại $MTX_BIN" >&2
+  exit 1
+fi
+"$MTX_BIN" --version 2>&1 | head -1
+
+# Kiểm tra config tồn tại
+if [ ! -f "$MTX_CFG" ]; then
+  echo "FATAL: thiếu config $MTX_CFG" >&2
+  exit 1
+fi
+
+# Dọn tiến trình cũ (dùng -f vì binary tên 'mediamtx')
+pkill -f 'mediamtx' 2>/dev/null || true
+sleep 1
+
+# Khởi động
+daemon "$MTX_LOG" "$AI_ROOT/mediamtx" "$MTX_BIN" "$MTX_CFG"
+
+# Chờ tối đa 20s cho tới khi cổng 8888/8889 mở
+ready=0
+for i in $(seq 1 20); do
+  if ss -lnt 2>/dev/null | grep -q ':8888 '; then ready=1; break; fi
+  sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+  echo "FATAL: MediaMTX không mở cổng 8888 sau 20s. Log:" >&2
+  tail -n 50 "$MTX_LOG" >&2 || true
+  exit 1
+fi
+echo "MediaMTX OK, log = $MTX_LOG"
 
 step "6/8 LiveTalking rtcpush (push vào 127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip)"
 daemon "$LOG_DIR/livetalking.log" "$AI_ROOT" python scripts/run_server.py \
