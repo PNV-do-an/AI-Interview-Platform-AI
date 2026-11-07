@@ -11,6 +11,10 @@
 # vẫn chạy được), trình duyệt chỉ kéo HLS qua HTTPS.
 set -euo pipefail
 
+# Tăng thời gian wait cho các bước dài
+export GIT_TERMINAL_PROMPT=0
+export AWS_MAX_ATTEMPTS=3
+
 AI_ROOT="${AI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 LT="$AI_ROOT/vendored/LiveTalking"
 AVATAR_ID="${AVATAR_ID:-vn_interviewer_v1}"
@@ -36,7 +40,8 @@ daemon() {
   local log="$1" dir="$2"; shift 2
   local launcher=(nohup)
   command -v setsid >/dev/null 2>&1 && launcher=(setsid)
-  ( cd "$dir" && "${launcher[@]}" "$@" </dev/null >"$log" 2>&1 & )
+  # Chuyen huong luu trong (stdout+stderr) vao log file
+  ( cd "$dir" && "${launcher[@]}" "$@" >"$log" 2>&1 < /dev/null & )
 }
 
 wait_http() { # wait_http <url> <giây-chờ> <mô-tả>
@@ -76,7 +81,8 @@ tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
     pkill -f "cloudflared tunnel --url http://127.0.0.1:$port" 2>/dev/null || true
     sleep 5
   done
-  echo "không mở được tunnel cho cổng $port sau 3 lần (xem $log)" >&2; return 1
+  echo "FATAL: không mở được tunnel cho cổng $port sau 3 lần (xem $log)" >&2
+  return 1
 }
 
 nvidia-smi -L || { echo "Colab chưa bật GPU: Runtime → Change runtime type → T4" >&2; exit 1; }
@@ -155,8 +161,11 @@ webrtcLocalUDPAddress: 0.0.0.0:8189
 webrtcAllowOrigin: '*'
 webrtcTrackGatherTimeout: 30s
 paths:
-  "$HLS_PATH":
+  default:
     source: publisher
+    # Tự động nhận bất kỳ path nào (avoid 404 nếu path chưa được định nghĩa)
+    runOnInit:
+      - command: ["echo", "WHIP ingest enabled for any path"]
 YML
 daemon "$LOG_DIR/mediamtx.out" /content/mediamtx ./mediamtx
 
