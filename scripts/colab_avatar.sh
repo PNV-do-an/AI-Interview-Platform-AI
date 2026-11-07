@@ -234,7 +234,13 @@ daemon "$LOG_DIR/livetalking.log" "$AI_ROOT" python scripts/run_server.py \
   --push_url "http://127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip" \
   --listenport "$PORT_LT"
 # rtcpush tự mở session "0" ngay lúc khởi động và push liên tục; HLS chỉ có stream khi cú push đó thành công.
-wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 180 "luồng avatar ($HLS_PATH)"
+echo "Waiting for HLS stream (max 90s)..." >&2
+wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 90 "luồng avatar ($HLS_PATH)" || {
+  echo "HLS không sẵn sau 90s - kiểm tra log:" >&2
+  tail -n 50 "$LOG_DIR/livetalking.log" >&2 || true
+  tail -n 50 "$MTX_LOG" >&2 || true
+  exit 1
+}
 curl -fsS -m 5 "http://127.0.0.1:$PORT_LT/api/admin/sessions" | head -c 200; echo
 
 step "7/8 cloudflared: tunnel HTTPS cho HLS"
