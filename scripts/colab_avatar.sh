@@ -28,6 +28,17 @@ mkdir -p "$LOG_DIR"
 
 step() { printf '\n=== %s ===\n' "$*"; }
 
+# daemon <log> <cwd> <lenh...>
+# Cell Colab ket thuc thi tan sat doan tien trinh cua shell no, nen "nohup ... &" thoi la khong
+# du: dich vu chet ngay sau do, duong tunnel tra Cloudflare 1033. setsid dua no sang session
+# khac; </dev/null + redirect thu cong 3 fd cua cell de cell khong bi giu trang thai Executing.
+daemon() {
+  local log="$1" dir="$2"; shift 2
+  local launcher=(nohup)
+  command -v setsid >/dev/null 2>&1 && launcher=(setsid)
+  ( cd "$dir" && "${launcher[@]}" "$@" </dev/null >"$log" 2>&1 & )
+}
+
 wait_http() { # wait_http <url> <giây-chờ> <mô-tả>
   local url="$1" limit="$2" what="$3" i
   # -L là bắt buộc: MediaMTX trả 302 set-cookie trước khi playlist thật, nên không theo
@@ -41,21 +52,45 @@ wait_http() { # wait_http <url> <giây-chờ> <mô-tả>
 }
 
 public_url_of() { # public_url_of <log> -> in ra URL trycloudflare đầu tiên
-  grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$1" | head -1
+  # Strip ANSI codes trước khi grep (Colab log co chep them).
+  # || true la bat buoc: grep tra 1 khi chua co URL, nen "set -eo pipefail" se giết script ngay
+  # vong lap dau tien cua tunnel() — chet im lang, khong in loi.
+  sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$1" 2>/dev/null | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 || true
 }
 
+# Mặc định cloudflared thử QUIC (UDP), và trên Colab nó có thể treo sau dòng "precheck complete"
+# mà không bao giờ in URL. --protocol http2 ép nó dùng TCP 443, đường mà chính precheck báo
+# "HTTP/2 connection successful". Vẫn cần retry vì quick tunnel đôi khi lỗi im lặng.
 tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
-  local port="$1" log="$2" limit="${3:-60}" url="" i
-  (nohup cloudflared tunnel --url "http://127.0.0.1:$port" --no-autoupdate > "$log" 2>&1 &)
-  for i in $(seq 1 "$limit"); do
-    url="$(public_url_of "$log")"
-    [ -n "$url" ] && { echo "$url"; return 0; }
-    sleep 1
+  local port="$1" log="$2" limit="${3:-90}" url="" attempt i
+  for attempt in 1 2 3; do
+    echo "[attempt $attempt] Starting cloudflared on port $port..." >&2
+    daemon "$log" / cloudflared tunnel --url "http://127.0.0.1:$port" \
+      --no-autoupdate --protocol http2
+    for i in $(seq 1 "$limit"); do
+      url="$(public_url_of "$log")"
+      [ -n "$url" ] && { echo "$url"; return 0; }
+      sleep 2
+    done
+    echo "cloudflared không in URL sau ${limit}s (lần thử $attempt/3, xem $log)" >&2
+    pkill -f "cloudflared tunnel --url http://127.0.0.1:$port" 2>/dev/null || true
+    sleep 5
   done
-  echo "cloudflared không in URL trong $limit+s (xem $log)" >&2; return 1
+  echo "không mở được tunnel cho cổng $port sau 3 lần (xem $log)" >&2; return 1
 }
 
 nvidia-smi -L || { echo "Colab chưa bật GPU: Runtime → Change runtime type → T4" >&2; exit 1; }
+
+# Chạy lại cell trên cùng runtime thì tiến trình lần trước vẫn giữ 8010/8020/8888/8889 và MediaMTX,
+# AI service cũ sẽ trả lời bằng config/HLS URL cũ -> dẹp đúng bốn thứ script này sinh ra (theo cmdline).
+step "don lan chay truoc"
+# tunnel chet ngay sau cell neu launcher la nohup -> dong nay cho biet Colab co setsid khong.
+echo "launcher tien trinh nen: $(command -v setsid || echo 'nohup (khong co setsid)')"
+pkill -x mediamtx 2>/dev/null || true
+pkill -f 'scripts/run_server.py' 2>/dev/null || true
+pkill -f 'run_ai_server.py' 2>/dev/null || true
+pkill -f 'cloudflared tunnel' 2>/dev/null || true
+sleep 3
 
 # vendored/ không vào git (.gitignore loại) nên không có nguồn LiveTalking trong bản clone.
 # Kéo thẳng từ upstream, pin đúng commit đã kiểm chứng trên máy local.
@@ -104,6 +139,7 @@ if [ ! -x /content/mediamtx/mediamtx ]; then
   wget -q -O /content/mtx.tgz "https://github.com/bluenviron/mediamtx/releases/download/v${VER}/mediamtx_v${VER}_linux_amd64.tar.gz"
   mkdir -p /content/mediamtx && tar -xzf /content/mtx.tgz -C /content/mediamtx
 fi
+# Mặc định 2s cắt phiên WHIP trước khi wav2lip ra được khung hình đầu, và LiveTalking không push lại.
 cat > /content/mediamtx/mediamtx.yml <<YML
 logLevel: info
 api: yes
@@ -117,35 +153,46 @@ webrtc: yes
 webrtcAddress: 127.0.0.1:$PORT_MTX_WHIP
 webrtcLocalUDPAddress: 0.0.0.0:8189
 webrtcAllowOrigin: '*'
+webrtcTrackGatherTimeout: 30s
+paths:
+  "$HLS_PATH":
+    source: publisher
 YML
-(cd /content/mediamtx && nohup ./mediamtx > "$LOG_DIR/mediamtx.out" 2>&1 &)
-wait_http "http://127.0.0.1:$PORT_MTX_HLS/" 30 "MediaMTX"
+daemon "$LOG_DIR/mediamtx.out" /content/mediamtx ./mediamtx
 
 step "6/8 LiveTalking rtcpush (push vào 127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip)"
-(cd "$AI_ROOT" && nohup python scripts/run_server.py \
+daemon "$LOG_DIR/livetalking.log" "$AI_ROOT" python scripts/run_server.py \
   --config "$AI_ROOT/config/livetalking.yaml" \
   --model "$MODEL" --avatar_id "$AVATAR_ID" \
   --transport rtcpush --max_session 1 \
   --push_url "http://127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip" \
-  --listenport "$PORT_LT" > "$LOG_DIR/livetalking.log" 2>&1 &)
+  --listenport "$PORT_LT"
 # rtcpush tự mở session "0" ngay lúc khởi động và push liên tục; HLS chỉ có stream khi cú push đó thành công.
 wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 180 "luồng avatar ($HLS_PATH)"
 curl -fsS -m 5 "http://127.0.0.1:$PORT_LT/api/admin/sessions" | head -c 200; echo
 
 step "7/8 cloudflared: tunnel HTTPS cho HLS"
-[ -x /usr/local/bin/cloudflared ] || wget -q -O /usr/local/bin/cloudflared \
-  https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+if [ ! -x /usr/local/bin/cloudflared ]; then
+  # wget -q im lang hon wget that: mot cu tai ken (Colab van thuong bi nganh toc khi di GitHub)
+  # se khien script dung o day ma khong in ra dong retry nao cua tunnel() -> khong phan biet duoc
+  # "tai cham" va "tunnel treo". Bu no in tien do va tu ket lieu neu 30s khong tien.
+  wget --show-progress --progress=dot:mega --timeout=30 --tries=4 -O /usr/local/bin/cloudflared \
+    https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+    || { echo "khong tai duoc cloudflared ve /usr/local/bin/cloudflared" >&2; exit 1; }
+fi
 chmod +x /usr/local/bin/cloudflared
+# File tai do/ken ma con +x thi "cloudflared tunnel" chet im trong log cua tunnel; --version loc ra ngay.
+/usr/local/bin/cloudflared --version
 HLS_URL="$(tunnel "$PORT_MTX_HLS" "$LOG_DIR/cf-hls.log")"
 echo "HLS public: $HLS_URL"
 
 step "8/8 AI service (FastAPI $PORT_AI)"
-( cd "$AI_ROOT" && env \
+daemon "$LOG_DIR/ai.log" "$AI_ROOT" env \
     AI_AVATAR_SERVER="http://127.0.0.1:$PORT_LT" \
     AI_AVATAR_ID="$AVATAR_ID" \
     AI_MEDIA_URL="$HLS_URL/$HLS_PATH/index.m3u8" \
     AI_ALLOWED_ORIGIN="$FE_ORIGIN" \
-    nohup python run_ai_server.py > "$LOG_DIR/ai.log" 2>&1 & )
+    python run_ai_server.py
 wait_http "http://127.0.0.1:$PORT_AI/health" 60 "AI service"
 curl -fsS -m 5 http://127.0.0.1:$PORT_AI/health; echo
 AI_URL="$(tunnel "$PORT_AI" "$LOG_DIR/cf-ai.log")"
