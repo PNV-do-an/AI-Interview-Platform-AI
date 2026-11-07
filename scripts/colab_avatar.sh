@@ -70,13 +70,39 @@ tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
   local port="$1" log="$2" limit="${3:-90}" url="" attempt i
   for attempt in 1 2 3; do
     echo "[attempt $attempt] Starting cloudflared on port $port..." >&2
+    
+    # Start tunnel
     daemon "$log" / cloudflared tunnel --url "http://127.0.0.1:$port" \
       --no-autoupdate --protocol http2
+    
+    # Trong khi chờ, tail log mỗi 5s để biết cloudflared đang làm gì
+    echo "[attempt $attempt] Waiting for cloudflared to mint URL (watching $log)..." >&2
+    last_size=0
+    
     for i in $(seq 1 "$limit"); do
-      url="$(public_url_of "$log")"
-      [ -n "$url" ] && { echo "$url"; return 0; }
+      # Check if log file exists and has content
+      if [ -f "$log" ]; then
+        current_size=$(wc -c < "$log" 2>/dev/null || echo 0)
+        
+        # Nếu log mới có nội dung, show it
+        if [ "$current_size" -gt "$last_size" ] && [ "$current_size" -gt 100 ]; then
+          echo "--- cloudflared output so far ---" >&2
+          tail -n 10 "$log" >&2
+          echo "--- end of cloudflared output ---" >&2
+          last_size=$current_size
+        fi
+        
+        # Try to extract URL
+        url="$(public_url_of "$log")"
+        if [ -n "$url" ]; then
+          echo "Cloudflared URL found!" >&2
+          echo "$url"; return 0
+        fi
+      fi
+      
       sleep 2
     done
+    
     echo "cloudflared không in URL sau ${limit}s (lần thử $attempt/3, xem $log)" >&2
     pkill -f "cloudflared tunnel --url http://127.0.0.1:$port" 2>/dev/null || true
     sleep 5
