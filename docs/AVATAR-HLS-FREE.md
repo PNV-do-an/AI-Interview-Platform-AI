@@ -61,7 +61,8 @@ vì `vendored/` không lên GitHub (`scripts/colab_avatar.sh` clone LiveTalking 
 bash scripts/colab_avatar.sh
 ```
 
-Script dựng theo thứ tự: deps (torch của Colab, không cài lại) → vá rtcpush → tải `wav2lip.pth`
+Script cài thêm FFmpeg development libraries cần để build RTMP transport (torch CUDA có sẵn của Colab
+được giữ nguyên) → tải `wav2lip.pth`
 (214MB, HF `shibing624/ai-avatar-wav2lip`) + `s3fd.pth` (90MB) → build pack `vn_interviewer_v1`
 từ `assets/vn_interviewer_src.png` (pack không vào git, `.gitignore` loại `data/` và `models/`)
 → MediaMTX → LiveTalking `rtcpush --max_session 1` → tunnel HLS → AI service → tunnel AI.

@@ -149,6 +149,11 @@ PY
 # Cài python_rtmpstream cho RTMP transport
 # Thư viện này không có trên PyPI, phải build từ source lipku/python_rtmpstream
 echo "[Step 1/8] Installing python_rtmpstream from source..." >&2
+echo "Installing FFmpeg development libraries..." >&2
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+
 RTMP_STREAM_DIR="/content/python_rtmpstream"
 if [ ! -d "$RTMP_STREAM_DIR" ]; then
   git clone -q --depth 1 https://github.com/lipku/python_rtmpstream.git "$RTMP_STREAM_DIR"
@@ -159,15 +164,18 @@ PYTHON_VER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.versi
 echo "Building rtmp_streaming for Python $PYTHON_VER..." >&2
 cd "$RTMP_STREAM_DIR/python" || { echo "FATAL: cannot cd to rtmp_stream_dir" >&2; exit 1; }
 
-# Try pip install first; fallback to manual CMake adjustments if needed
-if ! pip install -q . 2>/dev/null; then
-  echo "Falling back to manual cmake + pip install..." >&2
-  # Adjust CMakeLists.txt for system Python paths
-  sed -i 's|set(PYTHON_EXECUTABLE .*|set(PYTHON_EXECUTABLE '"$(which python)"')|' CMakeLists.txt
-  PYTHON_INC="$(python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
-  sed -i "s|include_directories(\"\.*\"|include_directories(\"$PYTHON_INC\")|" CMakeLists.txt
-  pip install -q .
-fi
+PYTHON_EXECUTABLE="$(command -v python)"
+PYTHON_INC="$(python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
+# Upstream CMakeLists.txt contains paths from its original Anaconda build environment.
+sed -i \
+  -e "s|^set(PYTHON_EXECUTABLE .*|set(PYTHON_EXECUTABLE \"$PYTHON_EXECUTABLE\")|" \
+  -e "s|^include_directories(\"/opt/anaconda3/envs/python37/include\")|include_directories(\"$PYTHON_INC\")|" \
+  -e 's|^find_library(AVCODEC_LIBRARY avcodec .*|find_library(AVCODEC_LIBRARY avcodec)|' \
+  -e 's|^find_library(AVFORMAT_LIBRARY avformat .*|find_library(AVFORMAT_LIBRARY avformat)|' \
+  -e 's|^find_library(AVUTIL_LIBRARY avutil .*|find_library(AVUTIL_LIBRARY avutil)|' \
+  -e 's|^find_library(SWSCALE_LIBRARY swscale .*|find_library(SWSCALE_LIBRARY swscale)|' \
+  CMakeLists.txt
+pip install -q .
 
 python -c "import rtmp_streaming; print('[ok] rtmp_streaming OK:', rtmp_streaming.__file__)"
 
