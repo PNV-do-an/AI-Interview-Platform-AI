@@ -63,11 +63,14 @@ public_url_of() { # public_url_of <log> -> in ra URL trycloudflare đầu tiên
   sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$1" 2>/dev/null | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 || true
 }
 
+TUNNEL_URL=""
+
 # Mặc định cloudflared thử QUIC (UDP), và trên Colab nó có thể treo sau dòng "precheck complete"
 # mà không bao giờ in URL. --protocol http2 ép nó dùng TCP 443, đường mà chính precheck báo
 # "HTTP/2 connection successful". Vẫn cần retry vì quick tunnel đôi khi lỗi im lặng.
-tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
+tunnel() { # tunnel <cổng> <log> <timeout-giây> -> đặt TUNNEL_URL
   local port="$1" log="$2" limit="${3:-90}" url="" attempt i
+  TUNNEL_URL=""
   for attempt in 1 2 3; do
     echo "[attempt $attempt] Starting cloudflared on port $port..." >&2
     
@@ -96,7 +99,8 @@ tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
         url="$(public_url_of "$log")"
         if [ -n "$url" ]; then
           echo "Cloudflared URL found!" >&2
-          echo "$url"; return 0
+          TUNNEL_URL="$url"
+          return 0
         fi
       fi
       
@@ -332,7 +336,8 @@ fi
 chmod +x /usr/local/bin/cloudflared
 # File tai do/ken ma con +x thi "cloudflared tunnel" chet im trong log cua tunnel; --version loc ra ngay.
 /usr/local/bin/cloudflared --version
-HLS_URL="$(tunnel "$PORT_MTX_HLS" "$LOG_DIR/cf-hls.log")"
+tunnel "$PORT_MTX_HLS" "$LOG_DIR/cf-hls.log"
+HLS_URL="$TUNNEL_URL"
 echo "HLS public: $HLS_URL"
 
 step "8/8 AI service (FastAPI $PORT_AI)"
@@ -344,7 +349,8 @@ daemon "$LOG_DIR/ai.log" "$AI_ROOT" env \
     python run_ai_server.py
 wait_http "http://127.0.0.1:$PORT_AI/health" 60 "AI service"
 curl -fsS -m 5 http://127.0.0.1:$PORT_AI/health; echo
-AI_URL="$(tunnel "$PORT_AI" "$LOG_DIR/cf-ai.log")"
+tunnel "$PORT_AI" "$LOG_DIR/cf-ai.log"
+AI_URL="$TUNNEL_URL"
 echo "AI service public: $AI_URL"
 
 echo "$AI_URL" > /content/ai_url.txt
