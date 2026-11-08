@@ -166,8 +166,10 @@ from pathlib import Path
 
 source = Path(sys.argv[1])
 text = source.read_text()
+text = text.replace("#define _GNU_SOURCE\n", "", 1)
 if "#include <time.h>" not in text:
-    source.write_text("#include <time.h>\n" + text)
+    text = "#include <time.h>\n" + text
+source.write_text(text)
 source.touch()
 PY
 # Check Python version và build tương thích
