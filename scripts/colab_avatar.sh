@@ -159,6 +159,16 @@ if [ ! -d "$RTMP_STREAM_DIR" ]; then
   git clone -q --depth 1 https://github.com/lipku/python_rtmpstream.git "$RTMP_STREAM_DIR"
   git -C "$RTMP_STREAM_DIR" submodule update --init --recursive --depth 1
 fi
+# The upstream source uses CLOCK_BOOTTIME without enabling the glibc declarations.
+python - "$RTMP_STREAM_DIR/streamer/streamer.cpp" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+text = source.read_text()
+if "#define _GNU_SOURCE" not in text:
+    source.write_text("#define _GNU_SOURCE\n#include <time.h>\n" + text)
+PY
 # Check Python version và build tương thích
 PYTHON_VER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 echo "Building rtmp_streaming for Python $PYTHON_VER..." >&2
