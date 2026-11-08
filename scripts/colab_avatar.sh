@@ -146,8 +146,9 @@ assert torch.cuda.is_available(), "torch không thấy CUDA — Colab chưa cấ
 print(f"[ok] torch {torch.__version__} / {torch.cuda.get_device_name(0)}")
 PY
 
-step "2/8 vá rtcpush để MediaMTX nhận SDP"
-python "$AI_ROOT/scripts/patch_rtcpush_whip.py"
+step "2/8 chuyển sang RTMP cho stream liên tục"
+# Bỏ qua WHIP patch — dùng RTMP sẽ ổn định hơn cho avatar stream 24/7
+echo "[skip] Using RTMP instead of WHIP — avoids session lifecycle issues" >&2
 
 step "3/8 tải weights (~300MB)"
 mkdir -p "$LT/models"
@@ -164,8 +165,8 @@ else
   ( cd "$AI_ROOT" && python scripts/make_avatar.py --src assets/vn_interviewer_src.png --id "$AVATAR_ID" )
 fi
 
-# --- 5/8 MediaMTX (WHIP ingest $PORT_MTX_WHIP, HLS out $PORT_MTX_HLS) ---
-echo "=== 5/8 MediaMTX (WHIP ingest $PORT_MTX_WHIP, HLS out $PORT_MTX_HLS) ==="
+# --- 5/8 MediaMTX (RTMP ingest 1935, HLS out 8888) ---
+echo "=== 5/8 MediaMTX (RTMP ingest :1935, HLS out :8888) ==="
 
 MTX_BIN="$AI_ROOT/mediamtx/mediamtx"
 MTX_CFG="$AI_ROOT/mediamtx/mediamtx.yml"
@@ -179,7 +180,7 @@ if [ ! -x "$MTX_BIN" ]; then
   mkdir -p "$AI_ROOT/mediamtx" && tar -xzf /content/mtx.tgz -C "$AI_ROOT/mediamtx"
 fi
 
-# Build minimal config chuẩn (port dùng : thay vì 127.0.0.1: để bind đúng interface Colab)
+# Build minimal config chuẩn — bật RTMP để nhận continuous stream
 cat > "$MTX_CFG" <<YML
 logLevel: info
 logDestinations: [stdout]
@@ -193,8 +194,10 @@ webrtcAddress: :8889
 webrtcAllowOrigin: '*'
 webrtcAdditionalHosts: [127.0.0.1]
 
+rtmp: yes
+rtmpAddress: :1935
+
 rtsp: no
-rtmp: no
 srt: no
 
 paths:
@@ -226,44 +229,33 @@ sleep 1
 # Khởi động
 daemon "$MTX_LOG" "$AI_ROOT/mediamtx" "$MTX_BIN" "$MTX_CFG"
 
-# Chờ tối đa 20s cho tới khi cổng 8888/8889 mở
+# Chờ tối đa 20s cho tới khi cổng 1935/8888 mở
 ready=0
 for i in $(seq 1 20); do
-  if ss -lnt 2>/dev/null | grep -q ':8888 '; then ready=1; break; fi
+  if ss -lnt 2>/dev/null | grep -q ':1935 '; then ready=1; break; fi
   sleep 1
 done
 
 if [ "$ready" -ne 1 ]; then
-  echo "FATAL: MediaMTX không mở cổng 8888 sau 20s. Log:" >&2
+  echo "FATAL: MediaMTX không mở cổng 1935 sau 20s. Log:" >&2
   tail -n 50 "$MTX_LOG" >&2 || true
   exit 1
 fi
-echo "MediaMTX OK, log = $MTX_LOG"
+echo "MediaMTX OK (RTMP), log = $MTX_LOG"
 
-step "6/8 LiveTalking rtcpush (push vào 127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip)"
+step "6/8 LiveTalking rtmp (push vào rtmp://127.0.0.1:1935/$HLS_PATH)"
 
-# Test WHIP OPTIONS before starting LiveTalking
-echo "Testing WHIP endpoint..." >&2
-WHIP_URL="http://127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip"
-OPTIONS_RESULT=$(curl -sS -o /dev/null -w '%{http_code}' -X OPTIONS "$WHIP_URL" 2>/dev/null || echo "FAIL")
-echo "WHIP OPTIONS $HLS_PATH -> $OPTIONS_RESULT" >&2
-
-# Nếu trả 404 hoặc 400, thử check log xem path có được đăng ký không
-if [ "$OPTIONS_RESULT" = "404" ] || [ "$OPTIONS_RESULT" = "400" ]; then
-  echo "WARN: WHIP path chưa được chấp nhận. Kiểm tra log:" >&2
-  tail -n 30 "$MTX_LOG" >&2 || true
-fi
-
+# RTMP là continuous stream, không có session lifecycle issues như WHIP
 daemon "$LOG_DIR/livetalking.log" "$AI_ROOT" python scripts/run_server.py \
   --config "$AI_ROOT/config/livetalking.yaml" \
   --model "$MODEL" --avatar_id "$AVATAR_ID" \
-  --transport rtcpush --max_session 1 \
-  --push_url "http://127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip" \
+  --transport rtmp --max_session 1 \
+  --push_url "rtmp://127.0.0.1:1935/$HLS_PATH" \
   --listenport "$PORT_LT"
-# rtcpush tự mở session "0" ngay lúc khởi động và push liên tục; HLS chỉ có stream khi cú push đó thành công.
-echo "Waiting for HLS stream (max 90s)..." >&2
-wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 90 "luồng avatar ($HLS_PATH)" || {
-  echo "HLS không sẵn sau 90s - kiểm tra log:" >&2
+# RTMP push liên tục; HLS sẽ available ngay khi avatar bắt đầu render frame
+echo "Waiting for HLS stream (max 60s)..." >&2
+wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 60 "luồng avatar ($HLS_PATH)" || {
+  echo "HLS không sẵn sau 60s - kiểm tra log:" >&2
   tail -n 50 "$LOG_DIR/livetalking.log" >&2 || true
   tail -n 50 "$MTX_LOG" >&2 || true
   exit 1
