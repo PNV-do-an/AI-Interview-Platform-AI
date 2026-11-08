@@ -62,7 +62,7 @@ def create_app(settings: Settings) -> FastAPI:
     orch = Orchestrator(settings, store, build_generator(settings), stt, avatar)
 
     app = FastAPI(title="HireMind AI service", version="1.0")
-    app.add_middleware(CORSMiddleware, allow_origins=[settings.allowed_origin],
+    app.add_middleware(CORSMiddleware, allow_origins=settings.allowed_origins,
                        allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
     @app.on_event("startup")

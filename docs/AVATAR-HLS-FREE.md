@@ -71,8 +71,10 @@ Biến môi trường AI service script tự set: `AI_AVATAR_SERVER=http://127.0
 `AI_AVATAR_ID=vn_interviewer_v1`, `AI_MEDIA_URL=<tunnel HLS>/avatar/index.m3u8`,
 `AI_ALLOWED_ORIGIN=https://aiinterview-vn.vercel.app`.
 
-FE: chỉ cần `REACT_APP_AI_SERVICE_URL` trỏ vào tunnel AI. Đó là biến build-time của CRA nên **đổi URL
-là phải redeploy**; `mediaUrl` thì đọc động từ `/health` nên tunnel HLS đổi cũng không cần rebuild.
+FE: tại `/mock-interviews`, chọn **LiveTalking Avatar**, dán URL tunnel AI từ Colab, kiểm tra kết nối
+rồi lưu trên trình duyệt. Nếu AI service chạy cho cả staging và local, đặt
+`AI_ALLOWED_ORIGIN=https://aiinterview-vn.vercel.app,http://localhost:3000`.
+`mediaUrl` vẫn được đọc động từ `/health`, không cần build lại FE khi tunnel thay đổi.
 
 ## 6. Giới hạn cần biết trước khi hứa với ai đó
 
