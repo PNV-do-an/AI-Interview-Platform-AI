@@ -146,6 +146,31 @@ assert torch.cuda.is_available(), "torch không thấy CUDA — Colab chưa cấ
 print(f"[ok] torch {torch.__version__} / {torch.cuda.get_device_name(0)}")
 PY
 
+# Cài python_rtmpstream cho RTMP transport
+# Thư viện này không có trên PyPI, phải build từ source lipku/python_rtmpstream
+echo "[Step 1/8] Installing python_rtmpstream from source..." >&2
+RTMP_STREAM_DIR="/content/python_rtmpstream"
+if [ ! -d "$RTMP_STREAM_DIR" ]; then
+  git clone -q --depth 1 https://github.com/lipku/python_rtmpstream.git "$RTMP_STREAM_DIR"
+  git -C "$RTMP_STREAM_DIR" submodule update --init --recursive --depth 1
+fi
+# Check Python version và build tương thích
+PYTHON_VER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+echo "Building rtmp_streaming for Python $PYTHON_VER..." >&2
+cd "$RTMP_STREAM_DIR/python" || { echo "FATAL: cannot cd to rtmp_stream_dir" >&2; exit 1; }
+
+# Try pip install first; fallback to manual CMake adjustments if needed
+if ! pip install -q . 2>/dev/null; then
+  echo "Falling back to manual cmake + pip install..." >&2
+  # Adjust CMakeLists.txt for system Python paths
+  sed -i 's|set(PYTHON_EXECUTABLE .*|set(PYTHON_EXECUTABLE '"$(which python)"')|' CMakeLists.txt
+  PYTHON_INC="$(python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
+  sed -i "s|include_directories(\"\.*\"|include_directories(\"$PYTHON_INC\")|" CMakeLists.txt
+  pip install -q .
+fi
+
+python -c "import rtmp_streaming; print('[ok] rtmp_streaming OK:', rtmp_streaming.__file__)"
+
 step "2/8 chuyển sang RTMP cho stream liên tục"
 # Bỏ qua WHIP patch — dùng RTMP sẽ ổn định hơn cho avatar stream 24/7
 echo "[skip] Using RTMP instead of WHIP — avoids session lifecycle issues" >&2
