@@ -188,7 +188,19 @@ sed -i \
   -e 's|^find_library(AVUTIL_LIBRARY avutil .*|find_library(AVUTIL_LIBRARY avutil)|' \
   -e 's|^find_library(SWSCALE_LIBRARY swscale .*|find_library(SWSCALE_LIBRARY swscale)|' \
   CMakeLists.txt
-pip install -q .
+RTMP_BUILD_DIR="$RTMP_STREAM_DIR/python/build-colab"
+cmake -S "$RTMP_STREAM_DIR/python" -B "$RTMP_BUILD_DIR" \
+  -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$RTMP_STREAM_DIR/python" \
+  -DPYTHON_EXECUTABLE="$PYTHON_EXECUTABLE" \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build "$RTMP_BUILD_DIR" --parallel 2
+RTMP_MODULE="$(find "$RTMP_STREAM_DIR/python" -maxdepth 1 -name 'rtmp_streaming*.so' -print -quit)"
+if [ -z "$RTMP_MODULE" ]; then
+  echo "FATAL: rtmp_streaming extension was not produced" >&2
+  exit 1
+fi
+SITE_PACKAGES="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+install -m 0644 "$RTMP_MODULE" "$SITE_PACKAGES/"
 
 python -c "import rtmp_streaming; print('[ok] rtmp_streaming OK:', rtmp_streaming.__file__)"
 
