@@ -223,7 +223,8 @@ class OpenAICompatibleGenerator:
                   'Trả về JSON: {"question": "..."} hoặc {"question": null} khi đã đủ.'
                   )
         convo = "\n".join(f"{t.index}. H: {t.question}\n   Đ: {t.answer or '(chưa trả lời)'}" for t in history[-8:])
-        out = self._chat(system, f"Vị trí: {role}\nJD:\n{jd_text[:4000]}\n\nHội thoại tới giờ:\n{convo}")
+        out = self._chat(system, f"Vị trí: {role}\nJD:\n{jd_text[:4000]}\n\nHội thoại tới giờ:\n{convo}",
+                         expect_json=True)
         try:
             return json.loads(out)["question"]
         except (json.JSONDecodeError, KeyError):

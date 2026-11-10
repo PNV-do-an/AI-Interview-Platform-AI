@@ -341,11 +341,23 @@ HLS_URL="$TUNNEL_URL"
 echo "HLS public: $HLS_URL"
 
 step "8/8 AI service (FastAPI $PORT_AI)"
+# Không có GROQ_API_KEY (Colab Secret, cell 2 nạp) thì giữ template để chạy offline được.
+LLM_ENV=()
+if [ -n "${GROQ_API_KEY:-}" ]; then
+  LLM_ENV=(AI_LLM_PROVIDER=openai
+           AI_LLM_BASE_URL="${AI_LLM_BASE_URL:-https://api.groq.com/openai/v1}"
+           AI_LLM_MODEL="${AI_LLM_MODEL:-openai/gpt-oss-120b}"
+           AI_LLM_API_KEY="$GROQ_API_KEY")
+  echo "LLM: openai-compatible, model ${AI_LLM_MODEL:-openai/gpt-oss-120b}"
+else
+  echo "LLM: template (chưa có GROQ_API_KEY — câu hỏi không bám nội dung trả lời)"
+fi
 daemon "$LOG_DIR/ai.log" "$AI_ROOT" env \
     AI_AVATAR_SERVER="http://127.0.0.1:$PORT_LT" \
     AI_AVATAR_ID="$AVATAR_ID" \
     AI_MEDIA_URL="$HLS_URL/$HLS_PATH/index.m3u8" \
     AI_ALLOWED_ORIGIN="$FE_ORIGIN" \
+    "${LLM_ENV[@]}" \
     python run_ai_server.py
 wait_http "http://127.0.0.1:$PORT_AI/health" 60 "AI service"
 curl -fsS -m 5 http://127.0.0.1:$PORT_AI/health; echo
