@@ -203,10 +203,38 @@ def create_app(settings: Settings) -> FastAPI:
         except Exception as e:  # noqa: BLE001
             raise http(e) from e
 
+    @app.post("/api/v1/ai/session/{sid}/finish")
+    async def finish(sid: str) -> dict:
+        """Kết thúc phỏng vấn: AI tự chấm rubric và trả báo cáo (kèm transcript)."""
+        try:
+            result = await orch.finish(sid)
+            log.info("Đã kết thúc + chấm rubric phiên %s sau %s lượt", sid, result["turns"])
+            return result
+        except Exception as e:  # noqa: BLE001
+            raise http(e) from e
+
+    @app.post("/api/v1/ai/session/{sid}/end")
+    async def end(sid: str) -> dict:
+        """Bí danh của /finish (khớp cách gọi trong sessions.py / BE spec)."""
+        try:
+            result = await orch.finish(sid)
+            log.info("Đã kết thúc + chấm rubric phiên %s sau %s lượt", sid, result["turns"])
+            return result
+        except Exception as e:  # noqa: BLE001
+            raise http(e) from e
+
     @app.delete("/api/v1/ai/session/{sid}")
     async def close_session(sid: str) -> dict:
-        """Xóa transcript ngay khi FE báo kết thúc — mặc định là hết hạn, đây là đường xóa chủ động."""
+        """Xóa transcript. Trước khi xóa AI vẫn tự chấm báo cáo để gửi cho người dùng (nếu chưa chấm)."""
+        report = None
+        try:
+            report = await orch.finish(sid)
+        except Exception:  # noqa: BLE001
+            report = None
         store.delete(sid)
-        return {"sessionid": sid, "deleted": True}
+        out = {"sessionid": sid, "deleted": True}
+        if report is not None:
+            out["evaluation"] = report
+        return out
 
     return app

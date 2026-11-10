@@ -217,9 +217,10 @@ class OpenAICompatibleGenerator:
     def next_question(self, role: str, jd_text: str, history: list[Turn], turn_index: int) -> str | None:
         if turn_index >= self.max_turns:
             return None
-        system = ("Bạn là người phỏng vấn kỹ thuật phần mềm bằng tiếng Việt. Hỏi một câu mỗi lần, "
-                  "ngắn gọn tối đa 55 từ, bám tin tuyển dụng và câu trả lời trước của ứng viên. "
-                  "Nếu ứng viên trả lời hời hợt thì đào sâu vào đúng chỗ đó, không hỏi lan man. "
+        system = ("Bạn là người phỏng vấn kỹ thuật phần mềm bằng tiếng Việt. Mỗi lượt bạn phải trả lời "
+                  "đúng nội dung ứng viên vừa gửi (nhận xét/nhận định ngắn) rồi mới đặt câu hỏi tiếp, "
+                  "tối đa 55 từ, bám tin tuyển dụng và câu trả lời trước. Nếu ứng viên trả lời hời hợt "
+                  "thì đào sâu vào đúng chỗ đó, không hỏi lan man. "
                   'Trả về JSON: {"question": "..."} hoặc {"question": null} khi đã đủ.'
                   )
         convo = "\n".join(f"{t.index}. H: {t.question}\n   Đ: {t.answer or '(chưa trả lời)'}" for t in history[-8:])
