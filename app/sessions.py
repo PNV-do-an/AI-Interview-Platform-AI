@@ -122,16 +122,27 @@ class Orchestrator:
         i = session.next_index if index is None else index
         if i < 0 or i > session.next_index:
             raise TurnConflict("Không hỏi được vào lượt chưa tới, hãy trả lời lượt hiện tại")
-        if i >= session.max_turns:
+        if i > session.max_turns:
             raise TurnConflict(f"Phiên đã đạt số lượt tối đa ({session.max_turns}), hãy kết thúc")
+        if i >= session.max_turns:
+            result = {"sessionid": session.id, "index": i, "questionText": None, "done": True,
+                      "finished": True}
+            try:
+                result["evaluation"] = self._score(session)
+                result["transcript"] = session.transcript()
+            except Exception:  # noqa: BLE001
+                pass
+            return result
         text = session.questions.get(i)
         if text is None:
             text = self.generator.next_question(session.job_title, session.jd_text,
                                                 session.history(), i)
             if text is None:
-                result = {"sessionid": session.id, "index": i, "questionText": None, "done": True}
+                result = {"sessionid": session.id, "index": i, "questionText": None, "done": True,
+                          "finished": True}
                 try:
                     result["evaluation"] = self._score(session)
+                    result["transcript"] = session.transcript()
                 except Exception:  # noqa: BLE001
                     pass
                 return result
@@ -188,8 +199,25 @@ class Orchestrator:
                       "confirmed": confirm,
                       "durationSec": duration_sec if duration_sec is not None
                       else (round(audio_seconds) if audio_seconds else None)}
-            if ask_next and confirm:
-                result["next"] = await self._question(session, speak=speak_next)
+            completed = bool(confirm and session.next_index >= session.max_turns)
+            if ask_next and confirm and not completed:
+                nxt = await self._question(session, speak=speak_next)
+                result["next"] = nxt
+                if isinstance(nxt, dict) and nxt.get("done"):
+                    result["done"] = True
+                    result["finished"] = True
+                    if "evaluation" in nxt:
+                        result["evaluation"] = nxt["evaluation"]
+                    if "transcript" in nxt:
+                        result["transcript"] = nxt["transcript"]
+            if completed:
+                result["done"] = True
+                result["finished"] = True
+                try:
+                    result["evaluation"] = self._score(session)
+                    result["transcript"] = session.transcript()
+                except Exception:  # noqa: BLE001
+                    pass
             return result
 
     def _score(self, session: Session) -> dict:
