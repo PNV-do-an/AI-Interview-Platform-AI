@@ -11,6 +11,10 @@
 # vẫn chạy được), trình duyệt chỉ kéo HLS qua HTTPS.
 set -euo pipefail
 
+# Tăng thời gian wait cho các bước dài
+export GIT_TERMINAL_PROMPT=0
+export AWS_MAX_ATTEMPTS=3
+
 AI_ROOT="${AI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 LT="$AI_ROOT/vendored/LiveTalking"
 AVATAR_ID="${AVATAR_ID:-vn_interviewer_v1}"
@@ -36,7 +40,8 @@ daemon() {
   local log="$1" dir="$2"; shift 2
   local launcher=(nohup)
   command -v setsid >/dev/null 2>&1 && launcher=(setsid)
-  ( cd "$dir" && "${launcher[@]}" "$@" </dev/null >"$log" 2>&1 & )
+  # Chuyen huong luu trong (stdout+stderr) vao log file
+  ( cd "$dir" && "${launcher[@]}" "$@" >"$log" 2>&1 < /dev/null & )
 }
 
 wait_http() { # wait_http <url> <giây-chờ> <mô-tả>
@@ -58,25 +63,56 @@ public_url_of() { # public_url_of <log> -> in ra URL trycloudflare đầu tiên
   sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$1" 2>/dev/null | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 || true
 }
 
+TUNNEL_URL=""
+
 # Mặc định cloudflared thử QUIC (UDP), và trên Colab nó có thể treo sau dòng "precheck complete"
 # mà không bao giờ in URL. --protocol http2 ép nó dùng TCP 443, đường mà chính precheck báo
 # "HTTP/2 connection successful". Vẫn cần retry vì quick tunnel đôi khi lỗi im lặng.
-tunnel() { # tunnel <cổng> <log> <timeout-giây> -> in ra URL public
+tunnel() { # tunnel <cổng> <log> <timeout-giây> -> đặt TUNNEL_URL
   local port="$1" log="$2" limit="${3:-90}" url="" attempt i
+  TUNNEL_URL=""
   for attempt in 1 2 3; do
     echo "[attempt $attempt] Starting cloudflared on port $port..." >&2
+    
+    # Start tunnel
     daemon "$log" / cloudflared tunnel --url "http://127.0.0.1:$port" \
       --no-autoupdate --protocol http2
+    
+    # Trong khi chờ, tail log mỗi 5s để biết cloudflared đang làm gì
+    echo "[attempt $attempt] Waiting for cloudflared to mint URL (watching $log)..." >&2
+    last_size=0
+    
     for i in $(seq 1 "$limit"); do
-      url="$(public_url_of "$log")"
-      [ -n "$url" ] && { echo "$url"; return 0; }
+      # Check if log file exists and has content
+      if [ -f "$log" ]; then
+        current_size=$(wc -c < "$log" 2>/dev/null || echo 0)
+        
+        # Nếu log mới có nội dung, show it
+        if [ "$current_size" -gt "$last_size" ] && [ "$current_size" -gt 100 ]; then
+          echo "--- cloudflared output so far ---" >&2
+          tail -n 10 "$log" >&2
+          echo "--- end of cloudflared output ---" >&2
+          last_size=$current_size
+        fi
+        
+        # Try to extract URL
+        url="$(public_url_of "$log")"
+        if [ -n "$url" ]; then
+          echo "Cloudflared URL found!" >&2
+          TUNNEL_URL="$url"
+          return 0
+        fi
+      fi
+      
       sleep 2
     done
+    
     echo "cloudflared không in URL sau ${limit}s (lần thử $attempt/3, xem $log)" >&2
     pkill -f "cloudflared tunnel --url http://127.0.0.1:$port" 2>/dev/null || true
     sleep 5
   done
-  echo "không mở được tunnel cho cổng $port sau 3 lần (xem $log)" >&2; return 1
+  echo "FATAL: không mở được tunnel cho cổng $port sau 3 lần (xem $log)" >&2
+  return 1
 }
 
 nvidia-smi -L || { echo "Colab chưa bật GPU: Runtime → Change runtime type → T4" >&2; exit 1; }
@@ -114,8 +150,67 @@ assert torch.cuda.is_available(), "torch không thấy CUDA — Colab chưa cấ
 print(f"[ok] torch {torch.__version__} / {torch.cuda.get_device_name(0)}")
 PY
 
-step "2/8 vá rtcpush để MediaMTX nhận SDP"
-python "$AI_ROOT/scripts/patch_rtcpush_whip.py"
+# Cài python_rtmpstream cho RTMP transport
+# Thư viện này không có trên PyPI, phải build từ source lipku/python_rtmpstream
+echo "[Step 1/8] Installing python_rtmpstream from source..." >&2
+echo "Installing FFmpeg development libraries..." >&2
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+
+RTMP_STREAM_DIR="/content/python_rtmpstream"
+if [ ! -d "$RTMP_STREAM_DIR" ]; then
+  git clone -q --depth 1 https://github.com/lipku/python_rtmpstream.git "$RTMP_STREAM_DIR"
+  git -C "$RTMP_STREAM_DIR" submodule update --init --recursive --depth 1
+fi
+# The upstream source uses CLOCK_BOOTTIME without including its glibc declarations.
+python - "$RTMP_STREAM_DIR/streamer/streamer.cpp" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+text = source.read_text()
+text = text.replace("#define _GNU_SOURCE\n", "", 1)
+if "#include <time.h>" not in text:
+    text = "#include <time.h>\n" + text
+source.write_text(text)
+source.touch()
+PY
+# Check Python version và build tương thích
+PYTHON_VER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+echo "Building rtmp_streaming for Python $PYTHON_VER..." >&2
+cd "$RTMP_STREAM_DIR/python" || { echo "FATAL: cannot cd to rtmp_stream_dir" >&2; exit 1; }
+
+PYTHON_EXECUTABLE="$(command -v python)"
+PYTHON_INC="$(python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
+# Upstream CMakeLists.txt contains paths from its original Anaconda build environment.
+sed -i \
+  -e "s|^set(PYTHON_EXECUTABLE .*|set(PYTHON_EXECUTABLE \"$PYTHON_EXECUTABLE\")|" \
+  -e "s|^include_directories(\"/opt/anaconda3/envs/python37/include\")|include_directories(\"$PYTHON_INC\")|" \
+  -e 's|^find_library(AVCODEC_LIBRARY avcodec .*|find_library(AVCODEC_LIBRARY avcodec)|' \
+  -e 's|^find_library(AVFORMAT_LIBRARY avformat .*|find_library(AVFORMAT_LIBRARY avformat)|' \
+  -e 's|^find_library(AVUTIL_LIBRARY avutil .*|find_library(AVUTIL_LIBRARY avutil)|' \
+  -e 's|^find_library(SWSCALE_LIBRARY swscale .*|find_library(SWSCALE_LIBRARY swscale)|' \
+  CMakeLists.txt
+RTMP_BUILD_DIR="$RTMP_STREAM_DIR/python/build-colab"
+cmake -S "$RTMP_STREAM_DIR/python" -B "$RTMP_BUILD_DIR" \
+  -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$RTMP_STREAM_DIR/python" \
+  -DPYTHON_EXECUTABLE="$PYTHON_EXECUTABLE" \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build "$RTMP_BUILD_DIR" --parallel 2
+RTMP_MODULE="$(find "$RTMP_STREAM_DIR/python" -maxdepth 1 -name 'rtmp_streaming*.so' -print -quit)"
+if [ -z "$RTMP_MODULE" ]; then
+  echo "FATAL: rtmp_streaming extension was not produced" >&2
+  exit 1
+fi
+SITE_PACKAGES="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+install -m 0644 "$RTMP_MODULE" "$SITE_PACKAGES/"
+
+python -c "import rtmp_streaming; print('[ok] rtmp_streaming OK:', rtmp_streaming.__file__)"
+
+step "2/8 chuyển sang RTMP cho stream liên tục"
+# Bỏ qua WHIP patch — dùng RTMP sẽ ổn định hơn cho avatar stream 24/7
+echo "[skip] Using RTMP instead of WHIP — avoids session lifecycle issues" >&2
 
 step "3/8 tải weights (~300MB)"
 mkdir -p "$LT/models"
@@ -132,43 +227,101 @@ else
   ( cd "$AI_ROOT" && python scripts/make_avatar.py --src assets/vn_interviewer_src.png --id "$AVATAR_ID" )
 fi
 
-step "5/8 MediaMTX (WHIP ingest $PORT_MTX_WHIP, HLS out $PORT_MTX_HLS)"
-if [ ! -x /content/mediamtx/mediamtx ]; then
+# --- 5/8 MediaMTX (RTMP ingest 1935, HLS out 8888) ---
+echo "=== 5/8 MediaMTX (RTMP ingest :1935, HLS out :8888) ==="
+
+MTX_BIN="$AI_ROOT/mediamtx/mediamtx"
+MTX_CFG="$AI_ROOT/mediamtx/mediamtx.yml"
+MTX_LOG="$LOG_DIR/mediamtx.log"
+
+# Download mediamtx if not exists
+if [ ! -x "$MTX_BIN" ]; then
   VER="$(curl -fsS https://api.github.com/repos/bluenviron/mediamtx/releases/latest |
         grep -oP '"tag_name":\s*"v\K[0-9.]+')"
   wget -q -O /content/mtx.tgz "https://github.com/bluenviron/mediamtx/releases/download/v${VER}/mediamtx_v${VER}_linux_amd64.tar.gz"
-  mkdir -p /content/mediamtx && tar -xzf /content/mtx.tgz -C /content/mediamtx
+  mkdir -p "$AI_ROOT/mediamtx" && tar -xzf /content/mtx.tgz -C "$AI_ROOT/mediamtx"
 fi
-# Mặc định 2s cắt phiên WHIP trước khi wav2lip ra được khung hình đầu, và LiveTalking không push lại.
-cat > /content/mediamtx/mediamtx.yml <<YML
+
+# Build minimal config chuẩn — bật RTMP để nhận continuous stream
+cat > "$MTX_CFG" <<YML
 logLevel: info
-api: yes
-apiAddress: 127.0.0.1:9997
-rtmp: yes
-rtmpAddress: 127.0.0.1:1935
+logDestinations: [stdout]
+
 hls: yes
-hlsAddress: 127.0.0.1:$PORT_MTX_HLS
+hlsAddress: :8888
 hlsAllowOrigin: '*'
+
 webrtc: yes
-webrtcAddress: 127.0.0.1:$PORT_MTX_WHIP
-webrtcLocalUDPAddress: 0.0.0.0:8189
+webrtcAddress: :8889
 webrtcAllowOrigin: '*'
-webrtcTrackGatherTimeout: 30s
+webrtcAdditionalHosts: [127.0.0.1]
+
+rtmp: yes
+rtmpAddress: :1935
+
+rtsp: no
+srt: no
+
 paths:
-  "$HLS_PATH":
+  all_others:
     source: publisher
 YML
-daemon "$LOG_DIR/mediamtx.out" /content/mediamtx ./mediamtx
 
-step "6/8 LiveTalking rtcpush (push vào 127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip)"
+echo "=== Mediamtx Config ===" >&2
+cat "$MTX_CFG" >&2
+echo "========================" >&2
+
+# Kiểm tra binary tồn tại & chạy được
+if [ ! -x "$MTX_BIN" ]; then
+  echo "FATAL: không tìm thấy mediamtx binary tại $MTX_BIN" >&2
+  exit 1
+fi
+"$MTX_BIN" --version 2>&1 | head -1
+
+# Kiểm tra config tồn tại
+if [ ! -f "$MTX_CFG" ]; then
+  echo "FATAL: thiếu config $MTX_CFG" >&2
+  exit 1
+fi
+
+# Dọn tiến trình cũ (dùng -f vì binary tên 'mediamtx')
+pkill -f 'mediamtx' 2>/dev/null || true
+sleep 1
+
+# Khởi động
+daemon "$MTX_LOG" "$AI_ROOT/mediamtx" "$MTX_BIN" "$MTX_CFG"
+
+# Chờ tối đa 20s cho tới khi cổng 1935/8888 mở
+ready=0
+for i in $(seq 1 20); do
+  if ss -lnt 2>/dev/null | grep -q ':1935 '; then ready=1; break; fi
+  sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+  echo "FATAL: MediaMTX không mở cổng 1935 sau 20s. Log:" >&2
+  tail -n 50 "$MTX_LOG" >&2 || true
+  exit 1
+fi
+echo "MediaMTX OK (RTMP), log = $MTX_LOG"
+
+step "6/8 LiveTalking rtmp (push vào rtmp://127.0.0.1:1935/$HLS_PATH)"
+
+# RTMP là continuous stream, không có session lifecycle issues như WHIP
 daemon "$LOG_DIR/livetalking.log" "$AI_ROOT" python scripts/run_server.py \
   --config "$AI_ROOT/config/livetalking.yaml" \
   --model "$MODEL" --avatar_id "$AVATAR_ID" \
-  --transport rtcpush --max_session 1 \
-  --push_url "http://127.0.0.1:$PORT_MTX_WHIP/$HLS_PATH/whip" \
+  --transport rtmp --max_session 1 \
+  --push_url "rtmp://127.0.0.1:1935/$HLS_PATH" \
   --listenport "$PORT_LT"
-# rtcpush tự mở session "0" ngay lúc khởi động và push liên tục; HLS chỉ có stream khi cú push đó thành công.
-wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 180 "luồng avatar ($HLS_PATH)"
+# RTMP push liên tục; HLS sẽ available ngay khi avatar bắt đầu render frame
+echo "Waiting for HLS stream (max 60s)..." >&2
+wait_http "http://127.0.0.1:$PORT_MTX_HLS/$HLS_PATH/index.m3u8" 60 "luồng avatar ($HLS_PATH)" || {
+  echo "HLS không sẵn sau 60s - kiểm tra log:" >&2
+  tail -n 50 "$LOG_DIR/livetalking.log" >&2 || true
+  tail -n 50 "$MTX_LOG" >&2 || true
+  exit 1
+}
 curl -fsS -m 5 "http://127.0.0.1:$PORT_LT/api/admin/sessions" | head -c 200; echo
 
 step "7/8 cloudflared: tunnel HTTPS cho HLS"
@@ -183,19 +336,33 @@ fi
 chmod +x /usr/local/bin/cloudflared
 # File tai do/ken ma con +x thi "cloudflared tunnel" chet im trong log cua tunnel; --version loc ra ngay.
 /usr/local/bin/cloudflared --version
-HLS_URL="$(tunnel "$PORT_MTX_HLS" "$LOG_DIR/cf-hls.log")"
+tunnel "$PORT_MTX_HLS" "$LOG_DIR/cf-hls.log"
+HLS_URL="$TUNNEL_URL"
 echo "HLS public: $HLS_URL"
 
 step "8/8 AI service (FastAPI $PORT_AI)"
+# Không có GROQ_API_KEY (Colab Secret, cell 2 nạp) thì giữ template để chạy offline được.
+LLM_ENV=()
+if [ -n "${GROQ_API_KEY:-}" ]; then
+  LLM_ENV=(AI_LLM_PROVIDER=openai
+           AI_LLM_BASE_URL="${AI_LLM_BASE_URL:-https://api.groq.com/openai/v1}"
+           AI_LLM_MODEL="${AI_LLM_MODEL:-openai/gpt-oss-120b}"
+           AI_LLM_API_KEY="$GROQ_API_KEY")
+  echo "LLM: openai-compatible, model ${AI_LLM_MODEL:-openai/gpt-oss-120b}"
+else
+  echo "LLM: template (chưa có GROQ_API_KEY — câu hỏi không bám nội dung trả lời)"
+fi
 daemon "$LOG_DIR/ai.log" "$AI_ROOT" env \
     AI_AVATAR_SERVER="http://127.0.0.1:$PORT_LT" \
     AI_AVATAR_ID="$AVATAR_ID" \
     AI_MEDIA_URL="$HLS_URL/$HLS_PATH/index.m3u8" \
     AI_ALLOWED_ORIGIN="$FE_ORIGIN" \
+    "${LLM_ENV[@]}" \
     python run_ai_server.py
 wait_http "http://127.0.0.1:$PORT_AI/health" 60 "AI service"
 curl -fsS -m 5 http://127.0.0.1:$PORT_AI/health; echo
-AI_URL="$(tunnel "$PORT_AI" "$LOG_DIR/cf-ai.log")"
+tunnel "$PORT_AI" "$LOG_DIR/cf-ai.log"
+AI_URL="$TUNNEL_URL"
 echo "AI service public: $AI_URL"
 
 echo "$AI_URL" > /content/ai_url.txt

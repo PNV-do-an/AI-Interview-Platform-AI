@@ -122,14 +122,30 @@ class Orchestrator:
         i = session.next_index if index is None else index
         if i < 0 or i > session.next_index:
             raise TurnConflict("Không hỏi được vào lượt chưa tới, hãy trả lời lượt hiện tại")
-        if i >= session.max_turns:
+        if i > session.max_turns:
             raise TurnConflict(f"Phiên đã đạt số lượt tối đa ({session.max_turns}), hãy kết thúc")
+        if i >= session.max_turns:
+            result = {"sessionid": session.id, "index": i, "questionText": None, "done": True,
+                      "finished": True}
+            try:
+                result["evaluation"] = self._score(session)
+                result["transcript"] = session.transcript()
+            except Exception:  # noqa: BLE001
+                pass
+            return result
         text = session.questions.get(i)
         if text is None:
             text = self.generator.next_question(session.job_title, session.jd_text,
                                                 session.history(), i)
             if text is None:
-                return {"sessionid": session.id, "index": i, "questionText": None, "done": True}
+                result = {"sessionid": session.id, "index": i, "questionText": None, "done": True,
+                          "finished": True}
+                try:
+                    result["evaluation"] = self._score(session)
+                    result["transcript"] = session.transcript()
+                except Exception:  # noqa: BLE001
+                    pass
+                return result
             session.questions[i] = text
         if speak:
             await self.speak(session, text)
@@ -178,20 +194,57 @@ class Orchestrator:
             session.touch()
 
             result = {"sessionid": session.id, "index": i, "answerText": answer_text,
+                      # AI trả lời đúng nội dung người dùng gửi (echo) để giống cuộc trò chuyện
+                      "reply": answer_text, "echo": answer_text,
                       "confirmed": confirm,
                       "durationSec": duration_sec if duration_sec is not None
                       else (round(audio_seconds) if audio_seconds else None)}
-            if ask_next and confirm:
-                result["next"] = await self._question(session, speak=speak_next)
+            completed = bool(confirm and session.next_index >= session.max_turns)
+            if ask_next and confirm and not completed:
+                nxt = await self._question(session, speak=speak_next)
+                result["next"] = nxt
+                if isinstance(nxt, dict) and nxt.get("done"):
+                    result["done"] = True
+                    result["finished"] = True
+                    if "evaluation" in nxt:
+                        result["evaluation"] = nxt["evaluation"]
+                    if "transcript" in nxt:
+                        result["transcript"] = nxt["transcript"]
+            if completed:
+                result["done"] = True
+                result["finished"] = True
+                try:
+                    result["evaluation"] = self._score(session)
+                    result["transcript"] = session.transcript()
+                except Exception:  # noqa: BLE001
+                    pass
             return result
 
+    def _score(self, session: Session) -> dict:
+        """Chấm rubric không lấy khóa — dùng nội bộ khi đã giữ khóa (answer/finish/done)."""
+        scored = self.generator.evaluate(session.job_title, session.jd_text,
+                                         session.history())
+        session.touch()
+        return {"sessionid": session.id, **scored,
+                "rubricVersion": self.settings.rubric_version,
+                "turns": len(session.turns)}
+
     async def evaluate(self, session_id: str) -> dict:
-        """Rubric 5 chiều cho FE relay sang POST /{id}/evaluation của BE. Không chấm ngoại hình hay giọng vùng miền."""
+        """Rubric 5 chiều. AI tự chấm từ transcript, không cần FE gửi điểm."""
         session = self.store.get(session_id)
         async with session.lock:
-            scored = self.generator.evaluate(session.job_title, session.jd_text,
-                                             session.history())
+            return self._score(session)
+
+    async def finish(self, session_id: str) -> dict:
+        """Kết thúc phỏng vấn: AI tự chấm rubric và trả báo cáo cho người dùng.
+
+        Không xóa phiên ngay để FE còn lấy transcript; xóa bằng DELETE /session/{id}
+        khi đã hiển thị xong báo cáo.
+        """
+        session = self.store.get(session_id)
+        async with session.lock:
             session.touch()
-            return {"sessionid": session.id, **scored,
-                    "rubricVersion": self.settings.rubric_version,
-                    "turns": len(session.turns)}
+            report = self._score(session)
+            report["transcript"] = session.transcript()
+            report["finished"] = True
+            return report

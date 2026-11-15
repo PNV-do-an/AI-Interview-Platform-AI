@@ -61,3 +61,8 @@ class Settings:
 
     def llm_ready(self) -> bool:
         return self.llm_provider == "openai" and bool(self.llm_base_url and self.llm_model)
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        """Explicit CORS allowlist; comma-separated origins support local and deployed frontends."""
+        return [origin.strip() for origin in self.allowed_origin.split(",") if origin.strip()]

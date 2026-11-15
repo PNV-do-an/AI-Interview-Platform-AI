@@ -63,7 +63,7 @@ browser, mà Colab/tunnel HTTP không chuyển được UDP — xem `docs/AVATAR
 | `AI_AVATAR_SERVER` | `http://127.0.0.1:8010` | LiveTalking engine URL (`http://livetalking:8010` khi chạy 2 container rời trong docker-compose) |
 | `AI_AVATAR_ID` | `vn_interviewer_v1` | Avatar pack id (build bằng `scripts/make_avatar.py`) |
 | `AI_MEDIA_URL` | *(rỗng)* | URL HLS public của avatar; có giá trị thì FE phát HLS, rỗng thì FE bắt tay WebRTC qua `/avatar/offer` |
-| `AI_ALLOWED_ORIGIN` | `http://localhost:3000` | CORS allowed origin — đặt đúng origin staging |
+| `AI_ALLOWED_ORIGIN` | `http://localhost:3000` | CORS allowlist, nhiều origin phân tách bằng dấu phẩy |
 | `AI_STT_MODEL` | `small` | Whisper model: tiny/base/small |
 | `AI_STT_DEVICE` / `AI_STT_COMPUTE` | `cpu` / `int8` | STT chạy CPU vì LiveTalking giữ hết VRAM 4GB |
 | `AI_LLM_PROVIDER` | `template` | template/openai/vllm |
