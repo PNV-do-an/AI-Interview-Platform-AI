@@ -35,6 +35,8 @@ class SessionIn(BaseModel):
     jobTitle: str = ""
     jdText: str = ""
     avatarSessionId: str = Field(min_length=1)
+    # Số câu ứng viên chọn (3..10); thiếu thì dùng trần của service.
+    questionCount: Optional[int] = Field(default=None, ge=3, le=10)
 
 
 class QuestionIn(BaseModel):
@@ -98,6 +100,11 @@ def create_app(settings: Settings) -> FastAPI:
         except SessionNotFound as e:
             raise HTTPException(404, str(e)) from e
 
+    @app.get("/ping")
+    async def ping() -> dict:
+        """Probe đo RTT thuần FE↔AI service, không gọi avatar nên không cộng hop Colab."""
+        return {"status": "ok"}
+
     @app.get("/health")
     async def health() -> dict:
         try:
@@ -121,9 +128,13 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/v1/ai/session")
     async def create_session(payload: SessionIn) -> dict:
-        session = store.create(payload.jobTitle, payload.jdText, payload.avatarSessionId,
-                               settings.max_turns)
-        log.info("Mở phiên AI %s (avatar %s)", session.id, session.avatar_session_id)
+        # Số câu ứng viên chọn là trần thật của phiên; 40 chỉ là chốt an toàn của BE 012.
+        cap = settings.max_turns
+        if payload.questionCount is not None:
+            cap = min(cap, payload.questionCount)
+        session = store.create(payload.jobTitle, payload.jdText, payload.avatarSessionId, cap)
+        log.info("Mở phiên AI %s (avatar %s, cap %s câu)", session.id,
+                 session.avatar_session_id, session.max_turns)
         return {"sessionid": session.id, "maxTurns": session.max_turns,
                 "rubricVersion": settings.rubric_version}
 
