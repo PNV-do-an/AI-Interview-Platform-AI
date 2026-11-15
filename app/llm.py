@@ -30,6 +30,83 @@ NUMERIC_RE = re.compile(
     re.IGNORECASE)
 FILLER_WORDS = ["thì", "là", "kiểu như", "cái đó", "nó nó", "giờ thì"]
 
+# Dấu hiệu dùng để nhận xét từng câu — chỉ đọc chính câu trả lời, không suy diễn ngoài transcript.
+PROJECT_HINTS = ("dự án", "project", "triển khai", "hệ thống", "sản phẩm", "team", "nhóm", "khách hàng")
+REASONING_HINTS = ("vì", "do đó", "nguyên nhân", "giải pháp", "phân tích", "đánh đổi", "trade-off", "kết quả")
+ANSWER_FILLER_HINTS = ("ừm", "ờ", "kiểu như", "thì là", "à thì")
+
+
+def answer_feedback(answer_text: str) -> dict:
+    """Nhận xét tất định cho một câu, chỉ dựa trên chính nội dung ứng viên đã trả lời."""
+    text = (answer_text or "").strip()
+    words = len(text.split()) if text else 0
+    if words == 0:
+        return {"score": 0,
+                "feedback": "Chưa có bản ghi câu trả lời nên chưa thể nhận xét nội dung câu này."}
+
+    lower = text.lower()
+    has_project = any(hint in lower for hint in PROJECT_HINTS)
+    has_reasoning = any(hint in lower for hint in REASONING_HINTS)
+    has_numbers = any(ch.isdigit() for ch in text)
+    fillers = sum(lower.count(hint) for hint in ANSWER_FILLER_HINTS)
+    score = int(max(0, min(100, round(
+        35 + (min(words, 120) / 120) * 45
+        + (8 if has_project else 0) + (6 if has_reasoning else 0) + (6 if has_numbers else 0)
+        - fillers * 3))))
+
+    excerpt = text if len(text) <= 150 else text[:147] + "..."
+    parts = [f'Bạn đã trả lời {words} từ: "{excerpt}".']
+    if has_project:
+        parts.append("Câu trả lời có dẫn chứng từ dự án/hệ thống thực tế.")
+    if has_reasoning:
+        parts.append("Có nêu nguyên nhân, giải pháp hoặc đánh đổi khi trình bày.")
+    if has_numbers:
+        parts.append("Có số liệu/kết quả cụ thể để tăng độ tin cậy.")
+    if words < 25:
+        parts.append("Gợi ý: mở rộng theo STAR — bối cảnh, việc bạn làm, hành động cụ thể và kết quả đo được.")
+    elif not has_project:
+        parts.append("Gợi ý: thêm một ví dụ dự án thật, vai trò của bạn và kết quả đạt được.")
+    elif not has_numbers:
+        parts.append("Gợi ý: bổ sung con số cụ thể (thời gian, quy mô dữ liệu, mức cải thiện) để câu trả lời thuyết phục hơn.")
+    elif fillers > 0:
+        parts.append("Gợi ý: giảm từ đệm và nói thẳng vào ý chính để giữ nhịp trình bày.")
+    else:
+        parts.append("Gợi ý: giữ cấu trúc này và bổ sung đánh đổi để thể hiện chiều sâu hơn.")
+    return {"score": score, "feedback": " ".join(parts)}
+
+
+def grounded_answer_evaluations(history: list[Turn], raw: object = None) -> list[dict]:
+    """Ghép nhận xét LLM (nếu có) với transcript thật; câu nào LLM bỏ sót thì chấm tất định."""
+    proposed: dict[int, dict] = {}
+    if isinstance(raw, list):
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                index = int(entry.get("index"))
+            except (TypeError, ValueError):
+                continue
+            score = entry.get("score")
+            try:
+                score = int(max(0, min(100, round(float(score))))) if score is not None else None
+            except (TypeError, ValueError):
+                score = None
+            feedback = str(entry.get("feedback") or "").strip()[:2000]
+            proposed[index] = {"score": score, "feedback": feedback}
+
+    out = []
+    for turn in history:
+        if not turn.answer:
+            continue
+        fallback = answer_feedback(turn.answer)
+        chosen = proposed.get(turn.index) or {}
+        out.append({
+            "index": turn.index,
+            "score": chosen.get("score") if chosen.get("score") is not None else fallback["score"],
+            "feedback": chosen.get("feedback") or fallback["feedback"],
+        })
+    return out
+
 
 def extract_skills(jd_text: str) -> list[str]:
     """Skill có trong JD, xếp theo thứ tự xuất hiện trong tin — kỹ thuật nêu trước đáng hỏi trước."""
@@ -177,6 +254,7 @@ class TemplateGenerator:
             "rubric": dims,
             "strengths": ". ".join(strengths) or "Chưa đủ dữ liệu để ghi điểm mạnh.",
             "improvements": ". ".join(improvements) or "Chưa đủ dữ liệu để ghi điểm cần cải thiện.",
+            "answers": grounded_answer_evaluations(history),
         }
 
 
@@ -235,7 +313,10 @@ class OpenAICompatibleGenerator:
         system = ("Bạn chấm một buổi phỏng vấn kỹ thuật. Chỉ dựa trên năng lực công việc, không bình luận "
                   "về giới tính, ngoại hình hay giọng vùng miền. Trả về JSON đúng cấu trúc: "
                   '{"rubric":{"chuyenMon":int,"duAn":int,"tuDuy":int,"truyenDat":int,"mucKhop":int},'
-                  '"strengths":"...","improvements":"..."} với mỗi điểm là số nguyên 0..100.')
+                  '"strengths":"...","improvements":"...",'
+                  '"answers":[{"index":int,"score":int,"feedback":"..."}]} với mỗi điểm là số nguyên 0..100. '
+                  "Mỗi phần tử answers phải ứng với đúng một câu trong transcript; feedback phải trích "
+                  "nội dung ứng viên đã nói và gợi ý cải thiện cụ thể, tối đa 2 câu, không bịa thêm.")
         convo = "\n".join(f"{t.index}. H: {t.question}\n   Đ: {t.answer or ''}" for t in history)
         out = self._chat(system, f"Vị trí: {role}\nJD:\n{jd_text[:4000]}\n\nTranscript:\n{convo[:12000]}",
                          expect_json=True)
@@ -243,7 +324,8 @@ class OpenAICompatibleGenerator:
         rubric = {k: int(max(0, min(100, round(float(data["rubric"][k]))))) for k in RUBRIC_DIMENSIONS}
         return {"rubric": rubric,
                 "strengths": str(data.get("strengths", ""))[:4000],
-                "improvements": str(data.get("improvements", ""))[:4000]}
+                "improvements": str(data.get("improvements", ""))[:4000],
+                "answers": grounded_answer_evaluations(history, data.get("answers"))}
 
 
 def build_generator(settings) -> TemplateGenerator | OpenAICompatibleGenerator:
